@@ -112,6 +112,11 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
         # 再入力用のセッションデータのみ更新（UI更新せず、再読み込みで反映）
         # ウィジェット表示後の直接書き換えは禁止されているため rerun を使う
         st.success("✅ レートを更新しました！ 入力欄にも反映されます")
+        components.html("""
+        <script>
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        </script>
+        """, height=0)
         st.rerun()
 
         st.success("✅ レートを更新しました！ 入力欄にも反映されています")
