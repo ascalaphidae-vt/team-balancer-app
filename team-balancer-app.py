@@ -10,7 +10,21 @@ if "stage" not in st.session_state:
     st.session_state.stage = "start"  # start, assigned, updated
 
 st.title("🎮 スプラ3オートバランス！byあすとらふぃーだ")
-st.markdown("ゲームのレートに応じて最適なチーム分けを行い、勝利チームのレートを更新できます ✨")
+st.markdown("""
+ゲームのレートに応じて最適なチーム分けを行い、勝利チームのレートを更新できます ✨
+
+---
+
+### 🕹️ つかいかた
+
+1. **参加するプレイヤー名**と、**だいたいのパワー（レート）**を入力して、
+   「✅ チームを分ける」を押すと、画面下にチーム編成が表示されます。
+
+2. できあがったチームで対戦したあと、**勝ったチームを選んで「📈 レートを更新する」**を押してください。
+   勝利チームのレートに少しだけボーナスが加算されます。
+
+3. そのまま「✅ チームを分ける」をもう一度押せば、**前回の結果を反映した新しいチーム分け**ができます！
+""")
 
 # --- セッション状態の初期化 ---
 if "players" not in st.session_state:
@@ -76,7 +90,7 @@ if img_url:
     }}
     </script>
     <div style='position: fixed; bottom: 1rem; right: 1rem; z-index: 5;'>
-        <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
+        <img src='{img_url}' width='170' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
     </div>
     """, height=260)
 if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
