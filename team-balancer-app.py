@@ -69,11 +69,11 @@ else:
 if img_url:
     components.html(f"""
     <script>
-    function confirmAndRedirect() {
-        if (confirm('あすとらふぃーだのチャンネルを表示する？')) {
+    function confirmAndRedirect() {{
+        if (confirm('あすとらふぃーだのチャンネルを表示する？')) {{
             window.open('https://www.youtube.com/channel/UCjJbi4Fs5kZIRAVWvNBPOpA', '_blank');
-        }
-    }
+        }}
+    }}
     </script>
     <div style='position: absolute; bottom: 0; right: 1rem; z-index: 5;'>
         <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
