@@ -68,10 +68,17 @@ else:
 
 if img_url:
     components.html(f"""
-    <div style='position: fixed; bottom: 1rem; right: 1rem; z-index: 5;'>
-        <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px;'>
+    <script>
+    function confirmAndRedirect() {
+        if (confirm('あすとらふぃーだのチャンネルを表示する？')) {
+            window.open('https://www.youtube.com/channel/UCjJbi4Fs5kZIRAVWvNBPOpA', '_blank');
+        }
+    }
+    </script>
+    <div style='position: absolute; bottom: 0; right: 1rem; z-index: 5;'>
+        <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
     </div>
-    """, height=200)
+    """, height=220)
 if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     st.success(f"💡 チーム分けしました！レート差: {abs(sum(p[1] for p in st.session_state.best_team_a) - sum(p[1] for p in st.session_state.best_team_b))}")
 
