@@ -71,7 +71,7 @@ if img_url:
     <div style='position: fixed; bottom: 1rem; right: 1rem; z-index: 5;'>
         <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px;'>
     </div>
-    """, height=0)
+    """, height=200)
 if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     st.success(f"💡 チーム分けしました！レート差: {abs(sum(p[1] for p in st.session_state.best_team_a) - sum(p[1] for p in st.session_state.best_team_b))}")
 
