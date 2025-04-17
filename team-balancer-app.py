@@ -1,10 +1,15 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import itertools
 
-st.set_page_config(page_title="チーム自動バランサー", layout="wide")
+st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
-st.title("🎮 チーム自動バランサー")
+# --- ステータス管理用セッション変数 ---
+if "stage" not in st.session_state:
+    st.session_state.stage = "start"  # start, assigned, updated
+
+st.title("🎮 スプラ3オートバランス！byあすとらふぃーだ")
 st.markdown("ゲームのレートに応じて最適なチーム分けを行い、勝利チームのレートを更新できます ✨")
 
 # --- セッション状態の初期化 ---
@@ -12,7 +17,7 @@ if "players" not in st.session_state:
     st.session_state.players = [("", 2000) for _ in range(8)]
 
 # --- プレイヤー入力フォーム + リセットボタン ---
-st.subheader("👥 プレイヤー情報の入力")
+st.subheader("🦑プレイヤー情報の入力🐙")
 st.markdown("各プレイヤーの名前と現在のレートを入力してください")
 
 with st.form(key="player_form"):
@@ -28,6 +33,8 @@ with st.form(key="player_form"):
             rate = st.number_input(f"レート{i+1}", min_value=0, value=st.session_state.players[i][1], step=50, key=f"rate_{i}")
             st.session_state.players[i] = (name, rate)
     submit = st.form_submit_button("✅ チームを分ける")
+    if submit:
+        st.session_state.stage = "assigned"
 
 # --- チーム分けロジック ---
 if submit:
@@ -49,9 +56,24 @@ if submit:
     st.session_state.best_team_a = best_team_a
     st.session_state.best_team_b = best_team_b
 
-# --- チーム表示 ---
+# --- チーム表示（この位置に画像も表示）
+
+# --- 状況に応じた画像表示 ---
+if st.session_state.stage == "start" or st.session_state.stage == "updated":
+    img_url = "https://cdn.discordapp.com/attachments/1291365679429189632/1362413372217364784/1.png?ex=68024dd4&is=6800fc54&hm=12d406f6e7bbda55e86f2fcbf700164ad03b8ce1142bd1766d449d383f2cf7a7&"
+elif st.session_state.stage == "assigned":
+    img_url = "https://cdn.discordapp.com/attachments/1291365679429189632/1362413397353693184/2.png?ex=68024dda&is=6800fc5a&hm=7537e4ecb893d42b6d028bc267f8e53b701d7e3b021fc9ea4a66b92dbe323f14&"
+else:
+    img_url = ""
+
+if img_url:
+    components.html(f"""
+    <div style='position: fixed; bottom: 1rem; right: 1rem; z-index: 5;'>
+        <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px;'>
+    </div>
+    """, height=0)
 if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
-    st.success(f"💡 最適なチームが見つかりました！レート差: {abs(sum(p[1] for p in st.session_state.best_team_a) - sum(p[1] for p in st.session_state.best_team_b))}")
+    st.success(f"💡 チーム分けしました！レート差: {abs(sum(p[1] for p in st.session_state.best_team_a) - sum(p[1] for p in st.session_state.best_team_b))}")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -71,6 +93,7 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     multiplier = st.number_input("更新倍率（例：1.03 = 3%加算）", value=1.03, step=0.01)
 
     if st.button("📈 レートを更新する"):
+        st.session_state.stage = "updated"
         if win_team == "A":
             updated = [(n, round(r * multiplier)) for n, r in st.session_state.best_team_a] + st.session_state.best_team_b
         else:
