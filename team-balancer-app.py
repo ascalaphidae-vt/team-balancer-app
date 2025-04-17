@@ -75,7 +75,7 @@ if img_url:
         }}
     }}
     </script>
-    <div style='position: sticky; bottom: 0; right: 1rem; z-index: 5; display: flex; justify-content: flex-end;'>
+    <div style='position: fixed; bottom: 1rem; right: 1rem; z-index: 5;'>
         <img src='{img_url}' width='180' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
     </div>
     """, height=260)
@@ -114,7 +114,8 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
         st.success("✅ レートを更新しました！ 入力欄にも反映されます")
         components.html("""
         <script>
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            const topElement = document.querySelector('body');
+            if (topElement) topElement.scrollIntoView({ behavior: 'smooth' });
         </script>
         """, height=0)
         st.rerun()
