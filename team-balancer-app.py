@@ -8,6 +8,9 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+# ← ここであなたのXプロフィールURLに置き換えてください
+X_URL = "https://x.com/"  # 例: "https://x.com/your_handle"
+
 st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
 # =========================
@@ -32,7 +35,16 @@ if "participate" not in st.session_state:
 if "bulk_input" not in st.session_state:
     st.session_state.bulk_input = ""
 
-st.title("🎮 スプラ3オートバランス！ by あすとらふぃーだ")
+# ===== ここを変更：タイトル + 控えめな "by" をクリックでXリンク =====
+st.markdown(
+    f"""
+    <h1 style="margin-bottom:0.2rem;">🎮 スプラ3オートバランス！</h1>
+    <div style="font-size:0.95rem; opacity:0.85; margin-bottom:1rem;">
+      by <a href="{X_URL}" target="_blank" style="text-decoration:none;">あすとらふぃーだ</a>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.markdown("""
 ゲームのレートに応じて最適なチーム分けを行い、勝利チームのレートを更新できます ✨
