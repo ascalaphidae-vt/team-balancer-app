@@ -182,12 +182,12 @@ with st.form(key="player_form"):
 # =========================
 # チーム分けロジック
 # =========================
-def assign_teams(players_list):
+def assign_teams(players_with_slot):
     """
-    与えられた (name, rate) のリストを2チームに最小差で分割。
+    与えられた (slot, name, rate) のリストを2チームに最小差で分割。
     片方の人数は floor(n/2)。もう片方は n - floor(n/2)。
     """
-    n = len(players_list)
+    n = len(players_with_slot)
     if n < 2:
         return [], [], None
 
@@ -196,11 +196,11 @@ def assign_teams(players_list):
     best_a, best_b = [], []
 
     # 組み合わせ全探索（最大8名までなので計算量は十分軽い：C(8,4)=70）
-    for combo in itertools.combinations(players_list, k):
+    for combo in itertools.combinations(players_with_slot, k):
         team_a = list(combo)
-        team_b = [p for p in players_list if p not in team_a]
-        sum_a = sum(p[1] for p in team_a)
-        sum_b = sum(p[1] for p in team_b)
+        team_b = [p for p in players_with_slot if p not in team_a]
+        sum_a = sum(p[2] for p in team_a)  # p = (slot, name, rate)
+        sum_b = sum(p[2] for p in team_b)
         diff = abs(sum_a - sum_b)
         if diff < min_diff:
             min_diff = diff
@@ -212,10 +212,10 @@ def assign_teams(players_list):
 # チーム編成 実行
 # =========================
 if st.session_state.get("stage") == "assigned" and submit:
-    # 「参加ON」かつ「名前が非空」だけを抽出
+    # 「参加ON」かつ「名前が非空」だけを抽出（slot付きで保持）
     selected = [
-        (n, r)
-        for (n, r), use in zip(st.session_state.players, st.session_state.participate)
+        (i, n, r)
+        for i, ((n, r), use) in enumerate(zip(st.session_state.players, st.session_state.participate))
         if use and str(n).strip() != ""
     ]
     n_sel = len(selected)
@@ -234,7 +234,7 @@ if st.session_state.get("stage") == "assigned" and submit:
         else:
             # 7人以下でもOK（自動で最小差分割）
             a, b, diff = assign_teams(selected)
-            st.session_state.best_team_a = a
+            st.session_state.best_team_a = a  # [(slot, name, rate), ...]
             st.session_state.best_team_b = b
             st.session_state.stage = "assigned_done"
             st.success(f"💡 チーム分けしました！ 参加人数: {n_sel} / レート差: {diff}")
@@ -264,21 +264,28 @@ if img_url:
     """, height=260)
 
 # =========================
-# チーム表示 & レート更新
+# チーム表示 & レート更新（スロットIDで更新）
 # =========================
 if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### 🟦 チームA")
-        df_a = pd.DataFrame(st.session_state.best_team_a, columns=["名前", "レート"])
+        # 表示は名前・レートのみ（内部は slot を保持）
+        df_a = pd.DataFrame(
+            [(n, r) for (_, n, r) in st.session_state.best_team_a],
+            columns=["名前", "レート"]
+        )
         st.dataframe(df_a, use_container_width=True)
-        st.markdown(f"**合計パワー：{int(df_a['レート'].sum())}**")
+        st.markdown(f"**合計パワー：{int(sum(r for (_, _, r) in st.session_state.best_team_a))}**")
 
     with col2:
         st.markdown("### 🟨 チームB")
-        df_b = pd.DataFrame(st.session_state.best_team_b, columns=["名前", "レート"])
+        df_b = pd.DataFrame(
+            [(n, r) for (_, n, r) in st.session_state.best_team_b],
+            columns=["名前", "レート"]
+        )
         st.dataframe(df_b, use_container_width=True)
-        st.markdown(f"**合計パワー：{int(df_b['レート'].sum())}**")
+        st.markdown(f"**合計パワー：{int(sum(r for (_, _, r) in st.session_state.best_team_b))}**")
 
     st.divider()
     st.subheader("🏆 勝利チームのレート更新")
@@ -289,16 +296,19 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     if st.button("📈 レートを更新する"):
         st.session_state.stage = "updated"
 
-        winners = set(
-            n for n, _ in (
+        # 勝者スロット集合（名前ではなく slot で更新）
+        winners_slots = {
+            slot for (slot, _, _) in (
                 st.session_state.best_team_a if win_team == "A" else st.session_state.best_team_b
             )
-        )
+        }
 
+        # スロットIDに基づいて players を更新
         updated_players = []
-        for (n, r) in st.session_state.players:
-            if str(n).strip() != "" and n in winners:
-                updated_players.append((n, round(float(r) * float(multiplier))))
+        for i, (n, r) in enumerate(st.session_state.players):
+            if i in winners_slots and str(n).strip() != "":
+                new_rate = round(float(r) * float(multiplier))
+                updated_players.append((n, new_rate))
             else:
                 updated_players.append((n, r))
 
