@@ -8,8 +8,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-# ← ここであなたのXプロフィールURLに置き換えてください
-X_URL = "https://x.com/"  # 例: "https://x.com/your_handle"
+
+X_URL = "https://x.com/Ascalaphidae"  # 例: "https://x.com/your_handle"
 
 st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
@@ -157,6 +157,7 @@ with st.form(key="player_form"):
                 value=st.session_state.participate[i],
                 key=f"part_{i}"
             )
+            # ウィジェットの値をソース・オブ・トゥルースとして players に反映
             st.session_state.players[i] = (name, int(rate))
             st.session_state.participate[i] = bool(part)
 
@@ -271,6 +272,7 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     win_team = st.radio("どちらのチームが勝ちましたか？", ["A", "B"], horizontal=True)
     multiplier = st.number_input("更新倍率（例：1.03 = 3%加算）", value=1.03, step=0.01)
 
+    # ★ 修正ポイント：players と rate_i ウィジェットの state を両方更新してから rerun
     if st.button("📈 レートを更新する"):
         st.session_state.stage = "updated"
         winners = set(n for n, _ in (st.session_state.best_team_a if win_team == "A" else st.session_state.best_team_b))
@@ -282,6 +284,15 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
             else:
                 updated_players.append((n, r))
 
+        # 1) players を更新
         st.session_state.players = updated_players
+
+        # 2) ウィジェットの状態も同期（ここが重要）
+        for i in range(10):
+            try:
+                st.session_state[f"rate_{i}"] = int(updated_players[i][1])
+            except Exception:
+                st.session_state[f"rate_{i}"] = 0
+
         st.success("✅ レートを更新しました！ 入力欄にも反映されます。")
         st.rerun()
