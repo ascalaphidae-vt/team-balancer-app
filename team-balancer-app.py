@@ -8,7 +8,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-
 X_URL = "https://x.com/Ascalaphidae"  # 例: "https://x.com/your_handle"
 
 st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
@@ -35,7 +34,7 @@ if "participate" not in st.session_state:
 if "bulk_input" not in st.session_state:
     st.session_state.bulk_input = ""
 
-# ===== ここを変更：タイトル + 控えめな "by" をクリックでXリンク =====
+# ===== タイトル + 控えめな "by" をクリックでXリンク =====
 st.markdown(
     f"""
     <h1 style="margin-bottom:0.2rem;">🎮 スプラ3オートバランス！</h1>
@@ -81,6 +80,9 @@ def _parse_and_apply_bulk():
     errors = []
     idx = 0
 
+    # 一旦全OFF（必要に応じてON）
+    st.session_state.participate = [False for _ in range(10)]
+
     for e in entries:
         # コロン（全角/半角）で name:rate に分割
         if "：" in e:
@@ -119,6 +121,9 @@ def _parse_and_apply_bulk():
     if errors:
         st.warning("⚠️ 次の項目は反映できませんでした：\n- " + "\n- ".join(errors))
 
+    # 👉 UIを即時更新（フォームが後段にあるため、この再実行が重要）
+    st.rerun()
+
 st.button("反映", type="primary", on_click=_parse_and_apply_bulk)
 
 # =========================
@@ -144,7 +149,11 @@ with st.form(key="player_form"):
     for i in range(10):
         with cols[i]:
             st.markdown(f"**枠{i+1}**")
-            name = st.text_input(f"名前{i+1}", value=st.session_state.players[i][0], key=f"name_{i}")
+            name = st.text_input(
+                f"名前{i+1}",
+                value=st.session_state.players[i][0],
+                key=f"name_{i}"
+            )
             rate = st.number_input(
                 f"レート{i+1}",
                 min_value=0,
@@ -157,12 +166,17 @@ with st.form(key="player_form"):
                 value=st.session_state.participate[i],
                 key=f"part_{i}"
             )
-            # ウィジェットの値をソース・オブ・トゥルースとして players に反映
-            st.session_state.players[i] = (name, int(rate))
-            st.session_state.participate[i] = bool(part)
+            # ⚠️ ここでは players へ書き戻さない（毎フレーム上書きバグ対策）
 
     submit = st.form_submit_button("✅ チームを分ける")
     if submit:
+        # フォーム送信時にだけ players / participate を同期
+        for i in range(10):
+            st.session_state.players[i] = (
+                st.session_state.get(f"name_{i}", ""),
+                int(st.session_state.get(f"rate_{i}", 0)),
+            )
+            st.session_state.participate[i] = bool(st.session_state.get(f"part_{i}", False))
         st.session_state.stage = "assigned"
 
 # =========================
@@ -206,7 +220,7 @@ if st.session_state.get("stage") == "assigned" and submit:
     ]
     n_sel = len(selected)
 
-    # ③ 9人以上はエラー（ゲーム上限8）
+    # 9人以上はエラー（ゲーム上限8）
     if n_sel >= 9:
         st.session_state.stage = "start"
         if "best_team_a" in st.session_state:
@@ -218,7 +232,7 @@ if st.session_state.get("stage") == "assigned" and submit:
         if n_sel < 2:
             st.warning("⚠️ 2人以上選んでください。（名前が空欄だと無視されます）")
         else:
-            # ④ 7人以下でもOK（自動で最小差分割）
+            # 7人以下でもOK（自動で最小差分割）
             a, b, diff = assign_teams(selected)
             st.session_state.best_team_a = a
             st.session_state.best_team_b = b
@@ -272,10 +286,14 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
     win_team = st.radio("どちらのチームが勝ちましたか？", ["A", "B"], horizontal=True)
     multiplier = st.number_input("更新倍率（例：1.03 = 3%加算）", value=1.03, step=0.01)
 
-    # ★ 修正ポイント：players と rate_i ウィジェットの state を両方更新してから rerun
     if st.button("📈 レートを更新する"):
         st.session_state.stage = "updated"
-        winners = set(n for n, _ in (st.session_state.best_team_a if win_team == "A" else st.session_state.best_team_b))
+
+        winners = set(
+            n for n, _ in (
+                st.session_state.best_team_a if win_team == "A" else st.session_state.best_team_b
+            )
+        )
 
         updated_players = []
         for (n, r) in st.session_state.players:
@@ -287,12 +305,11 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
         # 1) players を更新
         st.session_state.players = updated_players
 
-        # 2) ウィジェットの状態も同期（ここが重要）
+        # 2) rate_* ウィジェットの状態をクリア（次の描画で value が効くように）
         for i in range(10):
-            try:
-                st.session_state[f"rate_{i}"] = int(updated_players[i][1])
-            except Exception:
-                st.session_state[f"rate_{i}"] = 0
+            key = f"rate_{i}"
+            if key in st.session_state:
+                del st.session_state[key]
 
         st.success("✅ レートを更新しました！ 入力欄にも反映されます。")
         st.rerun()
