@@ -180,7 +180,7 @@ with st.form(key="player_form"):
         st.session_state.stage = "assigned"
 
 # =========================
-# チーム分けロジック
+# チーム分けロジック（スロットID付き）
 # =========================
 def assign_teams(players_with_slot):
     """
@@ -303,23 +303,17 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
             )
         }
 
-        # スロットIDに基づいて players を更新
-        updated_players = []
+        # スロットIDに基づいて players とウィジェットの数値を更新
+        updated_players = list(st.session_state.players)  # shallow copy
         for i, (n, r) in enumerate(st.session_state.players):
             if i in winners_slots and str(n).strip() != "":
-                new_rate = round(float(r) * float(multiplier))
-                updated_players.append((n, new_rate))
-            else:
-                updated_players.append((n, r))
+                new_rate = int(round(float(r) * float(multiplier)))
+                # players を更新
+                updated_players[i] = (n, new_rate)
+                # 入力欄（number_input）のstateを直接更新
+                st.session_state[f"rate_{i}"] = new_rate
 
-        # 1) players を更新
         st.session_state.players = updated_players
 
-        # 2) rate_* ウィジェットの状態をクリア（次の描画で value が効くように）
-        for i in range(10):
-            key = f"rate_{i}"
-            if key in st.session_state:
-                del st.session_state[key]
-
-        st.success("✅ レートを更新しました！ 入力欄にも反映されます。")
+        st.success("✅ レートを更新しました！ 入力欄の数値も更新されています。")
         st.rerun()
