@@ -34,6 +34,10 @@ if "participate" not in st.session_state:
 if "bulk_input" not in st.session_state:
     st.session_state.bulk_input = ""
 
+# ウィジェットキーのリビジョン（これを変えると key が一新され、value= が効く）
+if "form_rev" not in st.session_state:
+    st.session_state.form_rev = 0
+
 # ===== タイトル + 控えめな "by" をクリックでXリンク =====
 st.markdown(
     f"""
@@ -121,7 +125,8 @@ def _parse_and_apply_bulk():
     if errors:
         st.warning("⚠️ 次の項目は反映できませんでした：\n- " + "\n- ".join(errors))
 
-    # 👉 UIを即時更新（フォームが後段にあるため、この再実行が重要）
+    # 👉 UIを確実に更新（ウィジェットキーを切り替える）
+    st.session_state.form_rev += 1
     st.rerun()
 
 st.button("反映", type="primary", on_click=_parse_and_apply_bulk)
@@ -132,7 +137,9 @@ st.button("反映", type="primary", on_click=_parse_and_apply_bulk)
 st.subheader("🦑 プレイヤー情報の入力（個別） 🐙")
 st.markdown("各プレイヤーの名前・レート・参加可否を調整してください。")
 
-with st.form(key="player_form"):
+rev = st.session_state.form_rev  # 現行リビジョン
+
+with st.form(key=f"player_form_rev_{rev}"):
     reset_col, _ = st.columns([1, 5])
     with reset_col:
         if st.form_submit_button("🔄 入力をリセット"):
@@ -143,6 +150,8 @@ with st.form(key="player_form"):
                 del st.session_state["best_team_a"]
             if "best_team_b" in st.session_state:
                 del st.session_state["best_team_b"]
+            # キーを更新してから再描画
+            st.session_state.form_rev += 1
             st.rerun()
 
     cols = st.columns([1]*10)
@@ -152,19 +161,19 @@ with st.form(key="player_form"):
             name = st.text_input(
                 f"名前{i+1}",
                 value=st.session_state.players[i][0],
-                key=f"name_{i}"
+                key=f"name_{i}_{rev}"
             )
             rate = st.number_input(
                 f"レート{i+1}",
                 min_value=0,
                 value=int(st.session_state.players[i][1]),
                 step=50,
-                key=f"rate_{i}"
+                key=f"rate_{i}_{rev}"
             )
             part = st.checkbox(
                 "参加する",
                 value=st.session_state.participate[i],
-                key=f"part_{i}"
+                key=f"part_{i}_{rev}"
             )
             # ⚠️ ここでは players へ書き戻さない（毎フレーム上書きバグ対策）
 
@@ -173,10 +182,10 @@ with st.form(key="player_form"):
         # フォーム送信時にだけ players / participate を同期
         for i in range(10):
             st.session_state.players[i] = (
-                st.session_state.get(f"name_{i}", ""),
-                int(st.session_state.get(f"rate_{i}", 0)),
+                st.session_state.get(f"name_{i}_{rev}", ""),
+                int(st.session_state.get(f"rate_{i}_{rev}", 0)),
             )
-            st.session_state.participate[i] = bool(st.session_state.get(f"part_{i}", False))
+            st.session_state.participate[i] = bool(st.session_state.get(f"part_{i}_{rev}", False))
         st.session_state.stage = "assigned"
 
 # =========================
@@ -303,17 +312,17 @@ if "best_team_a" in st.session_state and "best_team_b" in st.session_state:
             )
         }
 
-        # スロットIDに基づいて players とウィジェットの数値を更新
+        # スロットIDに基づいて players を更新
         updated_players = list(st.session_state.players)  # shallow copy
         for i, (n, r) in enumerate(st.session_state.players):
             if i in winners_slots and str(n).strip() != "":
                 new_rate = int(round(float(r) * float(multiplier)))
-                # players を更新
                 updated_players[i] = (n, new_rate)
-                # 入力欄（number_input）のstateを直接更新
-                st.session_state[f"rate_{i}"] = new_rate
 
         st.session_state.players = updated_players
 
-        st.success("✅ レートを更新しました！ 入力欄の数値も更新されています。")
+        # ★ ウィジェットキーを更新してから再描画（value= が効く）
+        st.session_state.form_rev += 1
+
+        st.success("✅ レートを更新しました！ 入力欄の数値に反映されます。")
         st.rerun()
