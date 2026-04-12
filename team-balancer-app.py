@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 # Streamlit app: スプラ3オートバランス！ by あすとらふぃーだ
 # 改良点:
-# 1) 日本語入力しやすいように、全体フォーム(st.form)を廃止
-# 2) Enterキーで再実行されても入力が消えないように、各入力を session_state に即時保存
-# 3) 一括入力・個別入力・チーム分け・レート更新を安定動作に整理
+# 1) 日本語入力しやすいように st.form を使わない
+# 2) Enterキーで再実行されても入力が消えない
+# 3) レート更新後の StreamlitAPIException を回避
+# 4) 更新倍率のデフォルト値を 1.03 に固定
 
 import re
 import itertools
@@ -15,13 +16,11 @@ X_URL = "https://x.com/Ascalaphidae"
 
 st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
+
 # =========================
 # セッション変数 初期化
 # =========================
 if "stage" not in st.session_state:
-    # start -> 入力中
-    # assigned_done -> チーム表示中
-    # updated -> レート更新後
     st.session_state.stage = "start"
 
 if "players" not in st.session_state:
@@ -48,25 +47,15 @@ if "win_team" not in st.session_state:
 if "multiplier" not in st.session_state:
     st.session_state.multiplier = 1.03
 
-# 各ウィジェット用の初期値を session_state に展開
-for i in range(10):
-    name_key = f"name_{i}"
-    rate_key = f"rate_{i}"
-    part_key = f"part_{i}"
-
-    if name_key not in st.session_state:
-        st.session_state[name_key] = st.session_state.players[i][0]
-    if rate_key not in st.session_state:
-        st.session_state[rate_key] = int(st.session_state.players[i][1])
-    if part_key not in st.session_state:
-        st.session_state[part_key] = st.session_state.participate[i]
+# players -> widget 反映が必要なときだけ True
+if "sync_widgets_from_players" not in st.session_state:
+    st.session_state.sync_widgets_from_players = True
 
 
 # =========================
 # 補助関数
 # =========================
 def sync_player_from_widgets(index: int):
-    """各入力欄の値を players / participate に即時反映"""
     name = st.session_state.get(f"name_{index}", "")
     rate = int(st.session_state.get(f"rate_{index}", 0))
     part = bool(st.session_state.get(f"part_{index}", False))
@@ -76,23 +65,32 @@ def sync_player_from_widgets(index: int):
 
 
 def sync_all_players_from_widgets():
-    """全プレイヤー分をまとめて同期"""
     for idx in range(10):
         sync_player_from_widgets(idx)
-
-
-def load_widgets_from_players():
-    """players / participate の内容を各入力欄へ戻す"""
-    for idx in range(10):
-        st.session_state[f"name_{idx}"] = st.session_state.players[idx][0]
-        st.session_state[f"rate_{idx}"] = int(st.session_state.players[idx][1])
-        st.session_state[f"part_{idx}"] = st.session_state.participate[idx]
 
 
 def clear_team_result():
     st.session_state.best_team_a = []
     st.session_state.best_team_b = []
     st.session_state.last_diff = None
+
+
+def request_widget_sync():
+    st.session_state.sync_widgets_from_players = True
+
+
+def apply_widget_sync_if_needed():
+    """
+    ウィジェット描画前にだけ players / participate の値を
+    name_i / rate_i / part_i へ流し込む
+    """
+    if st.session_state.sync_widgets_from_players:
+        for idx in range(10):
+            st.session_state[f"name_{idx}"] = st.session_state.players[idx][0]
+            st.session_state[f"rate_{idx}"] = int(st.session_state.players[idx][1])
+            st.session_state[f"part_{idx}"] = st.session_state.participate[idx]
+
+        st.session_state.sync_widgets_from_players = False
 
 
 def reset_all():
@@ -103,7 +101,7 @@ def reset_all():
     st.session_state.win_team = "A"
     st.session_state.multiplier = 1.03
     clear_team_result()
-    load_widgets_from_players()
+    request_widget_sync()
 
 
 def parse_and_apply_bulk():
@@ -117,7 +115,6 @@ def parse_and_apply_bulk():
     errors = []
     idx = 0
 
-    # 一旦初期化
     st.session_state.players = [("", 2000) for _ in range(10)]
     st.session_state.participate = [False for _ in range(10)]
 
@@ -154,7 +151,7 @@ def parse_and_apply_bulk():
 
     clear_team_result()
     st.session_state.stage = "start"
-    load_widgets_from_players()
+    request_widget_sync()
 
     if applied > 0:
         st.success(f"✅ {applied}人を一括反映しました（参加ON）。")
@@ -242,9 +239,19 @@ def update_ratings():
             updated_players[i] = (n, new_rate)
 
     st.session_state.players = updated_players
-    load_widgets_from_players()
     st.session_state.stage = "updated"
+
+    # 次回描画の最初にだけ widget へ反映させる
+    request_widget_sync()
+
     st.success("✅ レートを更新しました！ 入力欄の数値に反映されます。")
+    st.rerun()
+
+
+# =========================
+# 描画前同期
+# =========================
+apply_widget_sync_if_needed()
 
 
 # =========================
@@ -265,14 +272,15 @@ st.markdown("""
 
 ---
 
-### 🕹️ つかいかた（追記：一括入力対応）
+### 🕹️ つかいかた
 - 下の **「🧩 一括入力」** に `名前：レート, 名前：レート, ...` の形式で入れて **反映** を押すと、
-  プレイヤー1から順に **名前** と **レート** が一括反映されます。（全角/半角のコロン・カンマOK。改行や「、」「；」「;」でも区切れます）
+  プレイヤー1から順に **名前** と **レート** が一括反映されます。
 - 一括反映された枠は **参加する** が自動でONになります。不要な枠はOFFにしてください。
 - 「✅ チームを分ける」を押すと、**参加ONかつ名前が入っている人だけ**でチーム分けします。
 - Enterキーで再実行されても、入力内容は保持されます。
 - **本アプリは非公式のファンメイドツールです**
 """)
+
 
 # =========================
 # 一括入力 UI
@@ -291,13 +299,16 @@ bulk_col1, bulk_col2 = st.columns([1, 1])
 with bulk_col1:
     if st.button("反映", type="primary", use_container_width=True):
         parse_and_apply_bulk()
+        st.rerun()
+
 with bulk_col2:
     if st.button("🔄 入力をリセット", use_container_width=True):
         reset_all()
         st.rerun()
 
+
 # =========================
-# 個別入力フォーム相当
+# 個別入力
 # =========================
 st.subheader("🦑 プレイヤー情報の入力（個別） 🐙")
 st.markdown("各プレイヤーの名前・レート・参加可否を調整してください。")
@@ -332,10 +343,9 @@ for i in range(10):
 
 st.markdown("")
 
-action_col1, action_col2 = st.columns([2, 3])
-with action_col1:
-    if st.button("✅ チームを分ける", type="primary", use_container_width=True):
-        run_team_assignment()
+if st.button("✅ チームを分ける", type="primary", use_container_width=True):
+    run_team_assignment()
+
 
 # =========================
 # 状況に応じた画像
@@ -360,6 +370,7 @@ if img_url:
         <img src='{img_url}' width='170' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
     </div>
     """, height=260)
+
 
 # =========================
 # チーム表示
@@ -401,6 +412,7 @@ if st.session_state.best_team_a and st.session_state.best_team_b:
     st.number_input(
         "更新倍率（例：1.03 = 3%加算）",
         min_value=0.0,
+        value=float(st.session_state.multiplier),
         step=0.01,
         key="multiplier"
     )
