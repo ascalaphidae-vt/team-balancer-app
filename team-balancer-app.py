@@ -614,9 +614,11 @@ with bulk_col1:
         st.rerun()
 
 with bulk_col2:
-    if st.button("🔄 入力をリセット", use_container_width=True):
-        reset_all()
-        st.rerun()
+    st.button(
+        "🔄 入力をリセット",
+        use_container_width=True,
+        on_click=reset_all,
+    )
 
 
 # =========================
