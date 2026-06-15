@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
 # Streamlit app: スプラ3オートバランス！ by あすとらふぃーだ
 # 改良点:
-# 1) 日本語入力しやすいように st.form を使わない
-# 2) Enterキーで再実行されても入力が消えない
+# 1) 個別入力をフォーム化し、日本語変換中の再実行を防止
+# 2) Enterキーで確定しても入力内容を保持
 # 3) レート更新後の StreamlitAPIException を回避
 # 4) 更新倍率のデフォルト値を 1.03 に固定
+# 5) 同じ対戦結果へのレート重複適用を防止
 
-import re
+import base64
 import itertools
+import mimetypes
+import re
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 X_URL = "https://x.com/Ascalaphidae"
+YOUTUBE_URL = "https://www.youtube.com/channel/UCjJbi4Fs5kZIRAVWvNBPOpA"
+
+APP_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = APP_DIR / "assets"
 
 st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
@@ -47,6 +56,9 @@ if "win_team" not in st.session_state:
 if "multiplier" not in st.session_state:
     st.session_state.multiplier = 1.03
 
+if "notice" not in st.session_state:
+    st.session_state.notice = None
+
 # players -> widget 反映が必要なときだけ True
 if "sync_widgets_from_players" not in st.session_state:
     st.session_state.sync_widgets_from_players = True
@@ -55,6 +67,17 @@ if "sync_widgets_from_players" not in st.session_state:
 # =========================
 # 補助関数
 # =========================
+def image_to_data_uri(filename: str):
+    image_path = ASSETS_DIR / filename
+    if not image_path.is_file():
+        return None
+
+    mime_type, _ = mimetypes.guess_type(image_path.name)
+    mime_type = mime_type or "image/png"
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
 def sync_player_from_widgets(index: int):
     name = st.session_state.get(f"name_{index}", "")
     rate = int(st.session_state.get(f"rate_{index}", 0))
@@ -100,6 +123,7 @@ def reset_all():
     st.session_state.stage = "start"
     st.session_state.win_team = "A"
     st.session_state.multiplier = 1.03
+    st.session_state.notice = None
     clear_team_result()
     request_widget_sync()
 
@@ -241,10 +265,10 @@ def update_ratings():
     st.session_state.players = updated_players
     st.session_state.stage = "updated"
 
-    # 次回描画の最初にだけ widget へ反映させる
+    # 同じ試合結果を誤って複数回適用できないよう、結果を消す。
+    clear_team_result()
     request_widget_sync()
-
-    st.success("✅ レートを更新しました！ 入力欄の数値に反映されます。")
+    st.session_state.notice = "✅ レートを更新しました！ 入力欄の数値に反映されています。"
     st.rerun()
 
 
@@ -252,6 +276,10 @@ def update_ratings():
 # 描画前同期
 # =========================
 apply_widget_sync_if_needed()
+
+if st.session_state.notice:
+    st.success(st.session_state.notice)
+    st.session_state.notice = None
 
 
 # =========================
@@ -277,7 +305,8 @@ st.markdown("""
   プレイヤー1から順に **名前** と **レート** が一括反映されます。
 - 一括反映された枠は **参加する** が自動でONになります。不要な枠はOFFにしてください。
 - 「✅ チームを分ける」を押すと、**参加ONかつ名前が入っている人だけ**でチーム分けします。
-- Enterキーで再実行されても、入力内容は保持されます。
+- 個別入力はフォーム内で行うため、日本語変換中に画面が再実行されにくくなっています。
+- Enterキーで確定しても入力内容は保持されます。
 - **本アプリは非公式のファンメイドツールです**
 """)
 
@@ -311,39 +340,39 @@ with bulk_col2:
 # 個別入力
 # =========================
 st.subheader("🦑 プレイヤー情報の入力（個別） 🐙")
-st.markdown("各プレイヤーの名前・レート・参加可否を調整してください。")
+st.markdown("各プレイヤーの名前・レート・参加可否を調整し、最後にチーム分けを押してください。")
 
-cols = st.columns(10)
-for i in range(10):
-    with cols[i]:
-        st.markdown(f"**枠{i+1}**")
+# フォーム内の編集では即時再実行されないため、日本語IMEの変換状態が保たれやすい。
+with st.form("player_form", clear_on_submit=False):
+    for row_start in range(0, 10, 5):
+        cols = st.columns(5)
+        for offset, col in enumerate(cols):
+            i = row_start + offset
+            with col:
+                st.markdown(f"**枠{i+1}**")
+                st.text_input(
+                    f"名前{i+1}",
+                    key=f"name_{i}",
+                    placeholder="プレイヤー名",
+                )
+                st.number_input(
+                    f"レート{i+1}",
+                    min_value=0,
+                    step=50,
+                    key=f"rate_{i}",
+                )
+                st.checkbox(
+                    "参加する",
+                    key=f"part_{i}",
+                )
 
-        st.text_input(
-            f"名前{i+1}",
-            key=f"name_{i}",
-            on_change=sync_player_from_widgets,
-            args=(i,),
-        )
+    assign_submitted = st.form_submit_button(
+        "✅ チームを分ける",
+        type="primary",
+        use_container_width=True,
+    )
 
-        st.number_input(
-            f"レート{i+1}",
-            min_value=0,
-            step=50,
-            key=f"rate_{i}",
-            on_change=sync_player_from_widgets,
-            args=(i,),
-        )
-
-        st.checkbox(
-            "参加する",
-            key=f"part_{i}",
-            on_change=sync_player_from_widgets,
-            args=(i,),
-        )
-
-st.markdown("")
-
-if st.button("✅ チームを分ける", type="primary", use_container_width=True):
+if assign_submitted:
     run_team_assignment()
 
 
@@ -351,18 +380,18 @@ if st.button("✅ チームを分ける", type="primary", use_container_width=Tr
 # 状況に応じた画像
 # =========================
 if st.session_state.stage in ("start", "updated"):
-    img_url = "https://cdn.discordapp.com/attachments/1291365679429189632/1362413372217364784/1.png?ex=68024dd4&is=6800fc54&hm=12d406f6e7bbda55e86f2fcbf700164ad03b8ce1142bd1766d449d383f2cf7a7&"
+    img_url = image_to_data_uri("character_start.png")
 elif st.session_state.stage == "assigned_done":
-    img_url = "https://cdn.discordapp.com/attachments/1291365679429189632/1362413397353693184/2.png?ex=68024dda&is=6800fc5a&hm=7537e4ecb893d42b6d028bc267f8e53b701d7e3b021fc9ea4a66b92dbe323f14&"
+    img_url = image_to_data_uri("character_assigned.png")
 else:
-    img_url = ""
+    img_url = None
 
 if img_url:
     components.html(f"""
     <script>
     function confirmAndRedirect() {{
         if (confirm('あすとらふぃーだのチャンネルを表示する？')) {{
-            window.open('https://www.youtube.com/channel/UCjJbi4Fs5kZIRAVWvNBPOpA', '_blank');
+            window.open('{YOUTUBE_URL}', '_blank');
         }}
     }}
     </script>
@@ -370,6 +399,8 @@ if img_url:
         <img src='{img_url}' width='170' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
     </div>
     """, height=260)
+else:
+    st.caption("画像を表示できません。assetsフォルダと画像ファイル名を確認してください。")
 
 
 # =========================
