@@ -18,7 +18,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 X_URL = "https://x.com/Ascalaphidae"
-YOUTUBE_URL = "https://www.youtube.com/channel/UCjJbi4Fs5kZIRAVWvNBPOpA"
+YOUTUBE_URL = "https://www.youtube.com/@%E3%81%82%E3%81%99%E3%81%A8%E3%82%89%E3%81%B5%E3%81%83%E3%83%BC%E3%81%A0"
 
 APP_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = APP_DIR / "assets"
@@ -26,7 +26,7 @@ ASSETS_DIR = APP_DIR / "assets"
 st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
 # =========================
-# 闇可愛いテーマ
+# CSS
 # =========================
 st.markdown(
     """
@@ -693,7 +693,7 @@ if st.session_state.best_team_a and st.session_state.best_team_b:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("### 🟦 チームA")
+        st.markdown("### 🟩 チームA")
         df_a = pd.DataFrame(
             [(n, r) for (_, n, r) in st.session_state.best_team_a],
             columns=["名前", "レート"]
@@ -702,7 +702,7 @@ if st.session_state.best_team_a and st.session_state.best_team_b:
         st.markdown(f"**合計パワー：{int(sum(r for (_, _, r) in st.session_state.best_team_a))}**")
 
     with col2:
-        st.markdown("### 🟨 チームB")
+        st.markdown("### 🟥 チームB")
         df_b = pd.DataFrame(
             [(n, r) for (_, n, r) in st.session_state.best_team_b],
             columns=["名前", "レート"]
