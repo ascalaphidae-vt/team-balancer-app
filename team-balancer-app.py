@@ -342,6 +342,12 @@ if "multiplier" not in st.session_state:
 if "notice" not in st.session_state:
     st.session_state.notice = None
 
+if "regulars" not in st.session_state:
+    st.session_state.regulars = []
+
+if "regular_import_text" not in st.session_state:
+    st.session_state.regular_import_text = ""
+
 # players -> widget 反映が必要なときだけ True
 if "sync_widgets_from_players" not in st.session_state:
     st.session_state.sync_widgets_from_players = True
@@ -379,6 +385,143 @@ def clear_team_result():
     st.session_state.best_team_a = []
     st.session_state.best_team_b = []
     st.session_state.last_diff = None
+
+
+def normalize_regulars(regulars):
+    normalized = []
+    seen_names = set()
+
+    for item in regulars:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+
+        try:
+            rate = max(0, int(item.get("rate", 0)))
+        except (TypeError, ValueError):
+            continue
+
+        if name in seen_names:
+            for existing in normalized:
+                if existing["name"] == name:
+                    existing["rate"] = rate
+                    break
+        else:
+            normalized.append({"name": name, "rate": rate})
+            seen_names.add(name)
+
+    return sorted(normalized, key=lambda item: item["name"])
+
+
+def regulars_to_text():
+    return "\n".join(
+        f"{item['name']}：{item['rate']}"
+        for item in normalize_regulars(st.session_state.regulars)
+    )
+
+
+def parse_regulars_text(raw_text):
+    raw_text = raw_text or ""
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    parsed = []
+    errors = []
+
+    for line in lines:
+        if "：" in line:
+            name, rate_str = line.split("：", 1)
+        elif ":" in line:
+            name, rate_str = line.split(":", 1)
+        elif "," in line:
+            name, rate_str = line.split(",", 1)
+        else:
+            errors.append(f"区切り（: または ：）が見つかりません: {line}")
+            continue
+
+        name = name.strip()
+        rate_str = rate_str.strip().translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+        if not name:
+            errors.append(f"名前が空です: {line}")
+            continue
+
+        if not re.fullmatch(r"\d+", rate_str):
+            errors.append(f"レートが数値ではありません: {line}")
+            continue
+
+        parsed.append({"name": name, "rate": max(0, int(rate_str))})
+
+    return parsed, errors
+
+
+def save_regular(name, rate):
+    name = str(name).strip()
+    if not name:
+        st.session_state.notice = "⚠️ 登録する名前を入力してください。"
+        return
+
+    try:
+        rate = max(0, int(rate))
+    except (TypeError, ValueError):
+        st.session_state.notice = "⚠️ 登録するレートは数値で入力してください。"
+        return
+
+    regulars = [
+        item for item in normalize_regulars(st.session_state.regulars)
+        if item["name"] != name
+    ]
+    regulars.append({"name": name, "rate": rate})
+    st.session_state.regulars = normalize_regulars(regulars)
+    st.session_state.notice = f"✅ {name} を登録しました。"
+
+
+def save_regular_from_widgets():
+    save_regular(
+        st.session_state.get("regular_name", ""),
+        st.session_state.get("regular_rate", 2000),
+    )
+
+
+def import_regulars():
+    parsed, errors = parse_regulars_text(st.session_state.regular_import_text)
+    if parsed:
+        st.session_state.regulars = normalize_regulars(
+            normalize_regulars(st.session_state.regulars) + parsed
+        )
+        st.session_state.notice = f"✅ {len(parsed)}件の登録データを読み込みました。"
+
+    if errors:
+        st.session_state.notice = "⚠️ 読み込めない行がありました：\n- " + "\n- ".join(errors)
+
+
+def delete_regular(name):
+    st.session_state.regulars = [
+        item for item in normalize_regulars(st.session_state.regulars)
+        if item["name"] != name
+    ]
+    st.session_state.notice = f"✅ {name} を登録リストから削除しました。"
+
+
+def add_regular_to_next_slot(name, rate):
+    st.session_state.regulars = normalize_regulars(st.session_state.regulars)
+
+    target_idx = None
+    for idx, use in enumerate(st.session_state.participate):
+        if not use:
+            target_idx = idx
+            break
+
+    if target_idx is None:
+        st.session_state.notice = "⚠️ 参加チェックが入っていない空き枠がありません。"
+        return
+
+    st.session_state.players[target_idx] = (name, int(rate))
+    st.session_state.participate[target_idx] = True
+    clear_team_result()
+    request_widget_sync()
+    st.session_state.notice = f"✅ {name} を枠{target_idx + 1}に呼び出しました。"
 
 
 def request_widget_sync():
@@ -735,3 +878,93 @@ if st.session_state.best_team_a and st.session_state.best_team_b:
 
     if st.button("📈 レートを更新する"):
         update_ratings()
+
+
+# =========================
+# 登録機能
+# =========================
+st.divider()
+st.subheader("💾 登録機能")
+st.markdown("常連さんの名前とレートを登録しておき、空いている一番手前の枠へ呼び出せます。")
+st.caption("登録リストはこの画面を開いている間は保持されます。閉じた後も使う場合は、エクスポートしたテキストを次回インポートしてください。")
+
+with st.form("regular_form", clear_on_submit=False):
+    reg_col1, reg_col2, reg_col3 = st.columns([2, 1, 1])
+    with reg_col1:
+        st.text_input(
+            "登録する名前",
+            key="regular_name",
+            placeholder="プレイヤー名",
+        )
+    with reg_col2:
+        st.number_input(
+            "登録するレート",
+            min_value=0,
+            step=50,
+            key="regular_rate",
+            value=2000,
+        )
+    with reg_col3:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        st.form_submit_button(
+            "登録する",
+            type="primary",
+            use_container_width=True,
+            on_click=save_regular_from_widgets,
+        )
+
+regulars = normalize_regulars(st.session_state.regulars)
+st.session_state.regulars = regulars
+
+if regulars:
+    st.markdown("#### 登録済み")
+    for idx, item in enumerate(regulars):
+        name = item["name"]
+        rate = item["rate"]
+        row_cols = st.columns([3, 1, 1, 1])
+        with row_cols[0]:
+            st.markdown(f"**{name}**")
+        with row_cols[1]:
+            st.markdown(f"`{rate}`")
+        with row_cols[2]:
+            st.button(
+                "呼び出す",
+                key=f"regular_load_{idx}_{name}",
+                use_container_width=True,
+                on_click=add_regular_to_next_slot,
+                args=(name, rate),
+            )
+        with row_cols[3]:
+            st.button(
+                "削除",
+                key=f"regular_delete_{idx}_{name}",
+                use_container_width=True,
+                on_click=delete_regular,
+                args=(name,),
+            )
+else:
+    st.info("まだ登録されていません。名前とレートを入力して登録してください。")
+
+export_text = regulars_to_text()
+st.download_button(
+    "登録リストをエクスポート",
+    data=export_text,
+    file_name="team-balancer-regulars.txt",
+    mime="text/plain",
+    use_container_width=True,
+    disabled=not bool(export_text),
+)
+
+with st.expander("登録リストをインポート"):
+    st.caption("エクスポートしたテキスト、または `名前：レート` を1行ずつ入力したテキストを貼り付けてください。")
+    st.text_area(
+        "インポートする登録リスト",
+        key="regular_import_text",
+        height=120,
+        placeholder="あすふぃだ：2630\nイシガケ：2000",
+    )
+    st.button(
+        "インポートする",
+        use_container_width=True,
+        on_click=import_regulars,
+    )
