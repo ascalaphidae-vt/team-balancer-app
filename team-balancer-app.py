@@ -157,6 +157,14 @@ st.markdown(
             transform 160ms ease;
     }
 
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stTextInput"] input {
+        ime-mode: active;
+        -webkit-ime-mode: active;
+        text-transform: none;
+        autocapitalize: none;
+    }
+
     [data-testid="stTextArea"] textarea:focus,
     [data-testid="stTextInput"] input:focus,
     [data-testid="stNumberInput"] input:focus {
@@ -770,6 +778,13 @@ with bulk_col2:
 st.subheader("🦑 プレイヤー情報の入力（個別） 🐙")
 st.markdown("各プレイヤーの名前・レート・参加可否を調整し、最後にチーム分けを押してください。")
 
+regular_options = {
+    f"{item['name']}：{item['rate']}": item
+    for item in normalize_regulars(st.session_state.regulars)
+}
+regular_call_submitted = False
+save_submitted = False
+
 # フォーム内の編集では即時再実行されないため、日本語IMEの変換状態が保たれやすい。
 with st.form("player_form", clear_on_submit=False):
     for row_start in range(0, 10, 5):
@@ -794,13 +809,44 @@ with st.form("player_form", clear_on_submit=False):
                     key=f"part_{i}",
                 )
 
-    assign_submitted = st.form_submit_button(
-        "✅ チームを分ける",
-        type="primary",
-        use_container_width=True,
-    )
+    form_cols = st.columns([1, 1, 1])
+    with form_cols[0]:
+        save_submitted = st.form_submit_button(
+            "入力を保存",
+            use_container_width=True,
+        )
+    with form_cols[1]:
+        assign_submitted = st.form_submit_button(
+            "✅ チームを分ける",
+            type="primary",
+            use_container_width=True,
+        )
+    with form_cols[2]:
+        if regular_options:
+            st.selectbox(
+                "登録済みから呼び出す",
+                list(regular_options.keys()),
+                key="regular_to_load",
+            )
+            regular_call_submitted = st.form_submit_button(
+                "空き枠へ呼び出す",
+                use_container_width=True,
+            )
+        else:
+            st.caption("登録済みの人がいると、ここから空き枠へ呼び出せます。")
 
-if assign_submitted:
+if regular_call_submitted:
+    sync_all_players_from_widgets()
+    selected_regular = regular_options.get(st.session_state.get("regular_to_load"))
+    if selected_regular:
+        add_regular_to_next_slot(selected_regular["name"], selected_regular["rate"])
+        st.rerun()
+elif save_submitted:
+    sync_all_players_from_widgets()
+    clear_team_result()
+    st.session_state.notice = "✅ 入力内容を保存しました。"
+    st.rerun()
+elif assign_submitted:
     run_team_assignment()
 
 
@@ -886,6 +932,7 @@ if st.session_state.best_team_a and st.session_state.best_team_b:
 st.divider()
 st.subheader("💾 登録機能")
 st.markdown("常連さんの名前とレートを登録しておき、空いている一番手前の枠へ呼び出せます。")
+st.caption("呼び出しは、上のプレイヤー情報フォーム内にある「登録済みから呼び出す」から行えます。")
 st.caption("登録リストはこの画面を開いている間は保持されます。閉じた後も使う場合は、エクスポートしたテキストを次回インポートしてください。")
 
 with st.form("regular_form", clear_on_submit=False):
@@ -921,20 +968,12 @@ if regulars:
     for idx, item in enumerate(regulars):
         name = item["name"]
         rate = item["rate"]
-        row_cols = st.columns([3, 1, 1, 1])
+        row_cols = st.columns([3, 1, 1])
         with row_cols[0]:
             st.markdown(f"**{name}**")
         with row_cols[1]:
             st.markdown(f"`{rate}`")
         with row_cols[2]:
-            st.button(
-                "呼び出す",
-                key=f"regular_load_{idx}_{name}",
-                use_container_width=True,
-                on_click=add_regular_to_next_slot,
-                args=(name, rate),
-            )
-        with row_cols[3]:
             st.button(
                 "削除",
                 key=f"regular_delete_{idx}_{name}",
