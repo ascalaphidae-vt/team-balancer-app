@@ -356,6 +356,9 @@ if "regulars" not in st.session_state:
 if "regular_import_text" not in st.session_state:
     st.session_state.regular_import_text = ""
 
+if "player_records" not in st.session_state:
+    st.session_state.player_records = {}
+
 # players -> widget 反映が必要なときだけ True
 if "sync_widgets_from_players" not in st.session_state:
     st.session_state.sync_widgets_from_players = True
@@ -644,6 +647,43 @@ def assign_teams(players_with_slot):
     return best_a, best_b, min_diff
 
 
+def record_match_results(updated_players, played_slots, winners_slots):
+    """レート更新後の値を使って、対戦・勝利・休憩の累計を更新する。"""
+    records = st.session_state.player_records
+
+    for idx, (raw_name, rate) in enumerate(updated_players):
+        name = str(raw_name).strip()
+        if not name:
+            continue
+
+        if name not in records:
+            records[name] = {
+                "name": name,
+                "rate": int(rate),
+                "matches": 0,
+                "wins": 0,
+                "win_rate": 0.0,
+                "rests": 0,
+            }
+
+        record = records[name]
+        record["rate"] = int(rate)
+
+        if idx in played_slots:
+            record["matches"] += 1
+            if idx in winners_slots:
+                record["wins"] += 1
+        elif not st.session_state.participate[idx]:
+            record["rests"] += 1
+
+        if record["matches"] > 0:
+            record["win_rate"] = record["wins"] / record["matches"] * 100
+        else:
+            record["win_rate"] = 0.0
+
+    st.session_state.player_records = records
+
+
 def run_team_assignment():
     sync_all_players_from_widgets()
 
@@ -689,6 +729,12 @@ def update_ratings():
             st.session_state.best_team_a if win_team == "A" else st.session_state.best_team_b
         )
     }
+    played_slots = {
+        slot
+        for (slot, _, _) in (
+            st.session_state.best_team_a + st.session_state.best_team_b
+        )
+    }
 
     updated_players = list(st.session_state.players)
     for i, (n, r) in enumerate(st.session_state.players):
@@ -697,6 +743,7 @@ def update_ratings():
             updated_players[i] = (n, new_rate)
 
     st.session_state.players = updated_players
+    record_match_results(updated_players, played_slots, winners_slots)
     st.session_state.stage = "updated"
 
     # 同じ試合結果を誤って複数回適用できないよう、結果を消す。
@@ -924,6 +971,35 @@ if st.session_state.best_team_a and st.session_state.best_team_b:
 
     if st.button("📈 レートを更新する"):
         update_ratings()
+
+
+# =========================
+# 対戦記録
+# =========================
+st.divider()
+st.subheader("📊 対戦記録")
+st.markdown("レート更新時に、プレイヤーごとの試合・勝利・休憩を累計します。")
+st.caption("レートは更新後の最新値です。記録はこの画面を開いている間だけ保持されます。")
+
+if st.session_state.player_records:
+    record_rows = []
+    for record in st.session_state.player_records.values():
+        record_rows.append({
+            "プレイヤー名": record["name"],
+            "最新レート": record["rate"],
+            "試合数": record["matches"],
+            "勝利数": record["wins"],
+            "勝率": f"{record['win_rate']:.1f}%",
+            "休憩回数": record["rests"],
+        })
+
+    st.dataframe(
+        pd.DataFrame(record_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.info("まだ対戦記録はありません。レートを更新すると記録されます。")
 
 
 # =========================
