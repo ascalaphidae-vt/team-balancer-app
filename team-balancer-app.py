@@ -1,1085 +1,316 @@
 # -*- coding: utf-8 -*-
-# Streamlit app: スプラ3オートバランス！ by あすとらふぃーだ
-# 改良点:
-# 1) 個別入力をフォーム化し、日本語変換中の再実行を防止
-# 2) Enterキーで確定しても入力内容を保持
-# 3) レート更新後の StreamlitAPIException を回避
-# 4) 更新倍率のデフォルト値を 1.03 に固定
-# 5) 同じ対戦結果へのレート重複適用を防止
-
-import base64
-import itertools
-import mimetypes
-import re
+"""スプラ3オートバランス！ ブラウザ保存対応版。"""
 from pathlib import Path
+import uuid
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-X_URL = "https://x.com/Ascalaphidae"
-YOUTUBE_URL = "https://www.youtube.com/@%E3%81%82%E3%81%99%E3%81%A8%E3%82%89%E3%81%B5%E3%81%83%E3%83%BC%E3%81%A0"
+import balancer_core as core
+from theme import apply_theme
 
 APP_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = APP_DIR / "assets"
+st.set_page_config(page_title="スプラ3オートバランス！", page_icon="🦑", layout="wide")
+apply_theme()
+browser_store = components.declare_component("team_balancer_browser_store", path=str(APP_DIR / "browser_store"))
 
-st.set_page_config(page_title="スプラ3オートバランス！", layout="wide")
 
-# =========================
-# CSS
-# =========================
-st.markdown(
-    """
-    <style>
-    :root {
-        --dark-bg: #050609;
-        --dark-panel: #0d1016;
-        --dark-panel-2: #151924;
-        --neon-cyan: #6ee7f2;
-        --soft-pink: #ff9dca;
-        --soft-lime: #d8ff8f;
-        --text-main: #f7f4fb;
-        --text-muted: #b9b4c4;
-        --line: rgba(110, 231, 242, 0.28);
-    }
-
-    html, body, [class*="css"] {
-        font-family:
-            "Zen Maru Gothic",
-            "Hiragino Maru Gothic ProN",
-            "Yu Gothic",
-            "Meiryo",
-            sans-serif;
-    }
-
-    .stApp {
-        color: var(--text-main);
-        background:
-            radial-gradient(
-                circle at 12% 4%,
-                rgba(255, 157, 202, 0.11),
-                transparent 27rem
-            ),
-            radial-gradient(
-                circle at 88% 18%,
-                rgba(110, 231, 242, 0.10),
-                transparent 30rem
-            ),
-            radial-gradient(
-                circle at 65% 90%,
-                rgba(216, 255, 143, 0.06),
-                transparent 26rem
-            ),
-            linear-gradient(145deg, #030407 0%, #080a0f 48%, #050609 100%);
-    }
-
-    [data-testid="stHeader"] {
-        background: rgba(5, 6, 9, 0.72);
-        backdrop-filter: blur(12px);
-    }
-
-    [data-testid="stMainBlockContainer"] {
-        max-width: 1540px;
-        padding-top: 4.5rem;
-    }
-
-    h1, h2, h3 {
-        color: var(--text-main);
-        letter-spacing: 0.025em;
-        text-shadow:
-            0 0 12px rgba(110, 231, 242, 0.30),
-            0 0 24px rgba(255, 157, 202, 0.14);
-    }
-
-    h1 {
-        background: linear-gradient(
-            90deg,
-            var(--soft-pink),
-            var(--text-main) 42%,
-            var(--neon-cyan)
-        );
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-    }
-
-    h2::after, h3::after {
-        content: "";
-        display: block;
-        width: 4.5rem;
-        height: 2px;
-        margin-top: 0.45rem;
-        border-radius: 999px;
-        background: linear-gradient(
-            90deg,
-            var(--soft-pink),
-            var(--neon-cyan),
-            transparent
-        );
-        box-shadow: 0 0 10px rgba(110, 231, 242, 0.55);
-    }
-
-    a {
-        color: var(--neon-cyan) !important;
-        text-decoration-color: rgba(255, 157, 202, 0.65) !important;
-    }
-
-    hr {
-        border-color: transparent !important;
-        background: linear-gradient(
-            90deg,
-            transparent,
-            rgba(255, 157, 202, 0.55),
-            rgba(110, 231, 242, 0.55),
-            transparent
-        ) !important;
-        height: 1px !important;
-    }
-
-    [data-testid="stCaptionContainer"],
-    [data-testid="stMarkdownContainer"] small {
-        color: var(--text-muted);
-    }
-
-    [data-testid="stTextArea"] textarea,
-    [data-testid="stTextInput"] input,
-    [data-testid="stNumberInput"] input {
-        color: var(--text-main);
-        background: rgba(13, 16, 22, 0.94);
-        border: 1px solid rgba(110, 231, 242, 0.34);
-        border-radius: 13px;
-        box-shadow:
-            inset 0 0 18px rgba(110, 231, 242, 0.035),
-            0 0 0 rgba(110, 231, 242, 0);
-        transition:
-            border-color 160ms ease,
-            box-shadow 160ms ease,
-            transform 160ms ease;
-    }
-
-    [data-testid="stTextArea"] textarea,
-    [data-testid="stTextInput"] input {
-        ime-mode: active;
-        -webkit-ime-mode: active;
-        text-transform: none;
-        autocapitalize: none;
-    }
-
-    [data-testid="stTextArea"] textarea:focus,
-    [data-testid="stTextInput"] input:focus,
-    [data-testid="stNumberInput"] input:focus {
-        border-color: var(--neon-cyan);
-        box-shadow:
-            0 0 0 1px var(--neon-cyan),
-            0 0 17px rgba(110, 231, 242, 0.24),
-            0 0 28px rgba(255, 157, 202, 0.08);
-    }
-
-    [data-testid="stTextArea"] textarea::placeholder,
-    [data-testid="stTextInput"] input::placeholder {
-        color: #777384;
-    }
-
-    [data-testid="stForm"] {
-        padding: 1.15rem;
-        border: 1px solid var(--line);
-        border-radius: 20px;
-        background:
-            linear-gradient(
-                145deg,
-                rgba(21, 25, 36, 0.82),
-                rgba(9, 11, 16, 0.90)
-            );
-        box-shadow:
-            0 14px 40px rgba(0, 0, 0, 0.35),
-            0 0 25px rgba(110, 231, 242, 0.055);
-    }
-
-    .stButton > button,
-    [data-testid="stFormSubmitButton"] > button {
-        min-height: 2.65rem;
-        color: var(--text-main);
-        font-weight: 700;
-        letter-spacing: 0.035em;
-        border: 1px solid rgba(110, 231, 242, 0.50);
-        border-radius: 13px;
-        background:
-            linear-gradient(
-                135deg,
-                rgba(18, 25, 32, 0.98),
-                rgba(24, 17, 29, 0.98)
-            );
-        box-shadow:
-            inset 0 0 16px rgba(110, 231, 242, 0.06),
-            0 0 14px rgba(110, 231, 242, 0.08);
-        transition:
-            transform 150ms ease,
-            border-color 150ms ease,
-            box-shadow 150ms ease;
-    }
-
-    .stButton > button:hover,
-    [data-testid="stFormSubmitButton"] > button:hover {
-        color: #07090c;
-        border-color: var(--soft-pink);
-        background: linear-gradient(
-            90deg,
-            var(--soft-pink),
-            var(--neon-cyan)
-        );
-        box-shadow:
-            0 0 18px rgba(255, 157, 202, 0.28),
-            0 0 24px rgba(110, 231, 242, 0.20);
-        transform: translateY(-1px);
-    }
-
-    .stButton > button[kind="primary"],
-    [data-testid="stFormSubmitButton"] > button[kind="primary"] {
-        color: #050609;
-        border-color: rgba(216, 255, 143, 0.90);
-        background: linear-gradient(
-            90deg,
-            var(--soft-pink),
-            var(--neon-cyan) 58%,
-            var(--soft-lime)
-        );
-        box-shadow:
-            0 0 18px rgba(110, 231, 242, 0.17),
-            0 0 25px rgba(255, 157, 202, 0.12);
-    }
-
-    [data-testid="stCheckbox"] svg,
-    [data-testid="stRadio"] svg {
-        color: var(--soft-lime);
-        filter: drop-shadow(0 0 5px rgba(216, 255, 143, 0.42));
-    }
-
-    [data-testid="stCheckbox"] label:hover,
-    [data-testid="stRadio"] label:hover {
-        color: var(--soft-pink);
-    }
-
-    [data-testid="stAlert"] {
-        color: var(--text-main);
-        border: 1px solid rgba(110, 231, 242, 0.36);
-        border-radius: 15px;
-        background:
-            linear-gradient(
-                120deg,
-                rgba(110, 231, 242, 0.10),
-                rgba(255, 157, 202, 0.08),
-                rgba(216, 255, 143, 0.06)
-            );
-        box-shadow: 0 0 22px rgba(110, 231, 242, 0.07);
-    }
-
-    [data-testid="stDataFrame"] {
-        overflow: hidden;
-        border: 1px solid rgba(255, 157, 202, 0.34);
-        border-radius: 16px;
-        background: var(--dark-panel);
-        box-shadow:
-            0 12px 28px rgba(0, 0, 0, 0.30),
-            0 0 18px rgba(255, 157, 202, 0.06);
-    }
-
-    [data-testid="stNumberInput"] button {
-        color: var(--neon-cyan);
-        background: rgba(110, 231, 242, 0.06);
-        border-color: rgba(110, 231, 242, 0.22);
-    }
-
-    code {
-        color: var(--soft-lime) !important;
-        background: rgba(216, 255, 143, 0.08) !important;
-        border: 1px solid rgba(216, 255, 143, 0.18);
-        border-radius: 6px;
-    }
-
-    ::selection {
-        color: #050609;
-        background: var(--soft-pink);
-    }
-
-    @media (max-width: 700px) {
-        [data-testid="stMainBlockContainer"] {
-            padding-top: 3.5rem;
-        }
-
-        [data-testid="stForm"] {
-            padding: 0.75rem;
-            border-radius: 15px;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# =========================
-# セッション変数 初期化
-# =========================
-if "stage" not in st.session_state:
-    st.session_state.stage = "start"
-
-if "players" not in st.session_state:
-    st.session_state.players = [("", 2000) for _ in range(10)]
-
-if "participate" not in st.session_state:
-    st.session_state.participate = [False for _ in range(10)]
-
-if "bulk_input" not in st.session_state:
-    st.session_state.bulk_input = ""
-
-if "best_team_a" not in st.session_state:
-    st.session_state.best_team_a = []
-
-if "best_team_b" not in st.session_state:
-    st.session_state.best_team_b = []
-
-if "last_diff" not in st.session_state:
-    st.session_state.last_diff = None
-
-if "win_team" not in st.session_state:
-    st.session_state.win_team = "A"
-
-if "multiplier" not in st.session_state:
-    st.session_state.multiplier = 1.03
-
-if "notice" not in st.session_state:
-    st.session_state.notice = None
-
-if "regulars" not in st.session_state:
-    st.session_state.regulars = []
-
-if "regular_import_text" not in st.session_state:
-    st.session_state.regular_import_text = ""
-
-if "player_records" not in st.session_state:
-    st.session_state.player_records = {}
-
-# players -> widget 反映が必要なときだけ True
-if "sync_widgets_from_players" not in st.session_state:
-    st.session_state.sync_widgets_from_players = True
-
-
-# =========================
-# 補助関数
-# =========================
-def image_to_data_uri(filename: str):
-    image_path = ASSETS_DIR / filename
-    if not image_path.is_file():
-        return None
-
-    mime_type, _ = mimetypes.guess_type(image_path.name)
-    mime_type = mime_type or "image/png"
-    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
-
-
-def sync_player_from_widgets(index: int):
-    name = st.session_state.get(f"name_{index}", "")
-    rate = int(st.session_state.get(f"rate_{index}", 0))
-    part = bool(st.session_state.get(f"part_{index}", False))
-
-    st.session_state.players[index] = (name, rate)
-    st.session_state.participate[index] = part
-
-
-def sync_all_players_from_widgets():
-    for idx in range(10):
-        sync_player_from_widgets(idx)
-
-
-def clear_team_result():
-    st.session_state.best_team_a = []
-    st.session_state.best_team_b = []
-    st.session_state.last_diff = None
-
-
-def normalize_regulars(regulars):
-    normalized = []
-    seen_names = set()
-
-    for item in regulars:
-        if not isinstance(item, dict):
-            continue
-
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-
-        try:
-            rate = max(0, int(item.get("rate", 0)))
-        except (TypeError, ValueError):
-            continue
-
-        if name in seen_names:
-            for existing in normalized:
-                if existing["name"] == name:
-                    existing["rate"] = rate
-                    break
-        else:
-            normalized.append({"name": name, "rate": rate})
-            seen_names.add(name)
-
-    return sorted(normalized, key=lambda item: item["name"])
-
-
-def regulars_to_text():
-    return "\n".join(
-        f"{item['name']}：{item['rate']}"
-        for item in normalize_regulars(st.session_state.regulars)
-    )
-
-
-def parse_regulars_text(raw_text):
-    raw_text = raw_text or ""
-    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
-    parsed = []
-    errors = []
-
-    for line in lines:
-        if "：" in line:
-            name, rate_str = line.split("：", 1)
-        elif ":" in line:
-            name, rate_str = line.split(":", 1)
-        elif "," in line:
-            name, rate_str = line.split(",", 1)
-        else:
-            errors.append(f"区切り（: または ：）が見つかりません: {line}")
-            continue
-
-        name = name.strip()
-        rate_str = rate_str.strip().translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-
-        if not name:
-            errors.append(f"名前が空です: {line}")
-            continue
-
-        if not re.fullmatch(r"\d+", rate_str):
-            errors.append(f"レートが数値ではありません: {line}")
-            continue
-
-        parsed.append({"name": name, "rate": max(0, int(rate_str))})
-
-    return parsed, errors
-
-
-def save_regular(name, rate):
-    name = str(name).strip()
-    if not name:
-        st.session_state.notice = "⚠️ 登録する名前を入力してください。"
-        return
-
+def action(fn, *args):
     try:
-        rate = max(0, int(rate))
-    except (TypeError, ValueError):
-        st.session_state.notice = "⚠️ 登録するレートは数値で入力してください。"
+        fn(st.session_state.model, *args)
+        st.session_state.sync_inputs = True
+        st.session_state.notice = ("success", "保存しました。")
+    except ValueError as error:
+        st.session_state.notice = ("error", str(error))
+
+
+def capture_roster():
+    """Text changes are persisted on blur/Enter, including unfinished rate text."""
+    if core.pending_match(st.session_state.model):
         return
-
-    regulars = [
-        item for item in normalize_regulars(st.session_state.regulars)
-        if item["name"] != name
-    ]
-    regulars.append({"name": name, "rate": rate})
-    st.session_state.regulars = normalize_regulars(regulars)
-    st.session_state.notice = f"✅ {name} を登録しました。"
+    for i, row in enumerate(st.session_state.model["roster"]):
+        row.update(name=st.session_state.get(f"name_{i}", row["name"]),
+                   rate=st.session_state.get(f"rate_{i}", row["rate"]),
+                   active=st.session_state.get(f"part_{i}", row["active"]))
+    core.touch(st.session_state.model)
 
 
-def save_regular_from_widgets():
-    save_regular(
-        st.session_state.get("regular_name", ""),
-        st.session_state.get("regular_rate", 2000),
-    )
+def capture_bulk():
+    st.session_state.model["bulk_text"] = st.session_state.bulk_text
+    core.touch(st.session_state.model)
 
 
-def import_regulars():
-    parsed, errors = parse_regulars_text(st.session_state.regular_import_text)
-    if parsed:
-        st.session_state.regulars = normalize_regulars(
-            normalize_regulars(st.session_state.regulars) + parsed
-        )
-        st.session_state.notice = f"✅ {len(parsed)}件の登録データを読み込みました。"
-
-    if errors:
-        st.session_state.notice = "⚠️ 読み込めない行がありました：\n- " + "\n- ".join(errors)
+def apply_current_bulk():
+    # Read at callback time; args constructed before the textarea's blur can be stale.
+    text = st.session_state.get("bulk_text", "")
+    st.session_state.model["bulk_text"] = text
+    action(core.apply_bulk, text)
 
 
-def delete_regular(name):
-    st.session_state.regulars = [
-        item for item in normalize_regulars(st.session_state.regulars)
-        if item["name"] != name
-    ]
-    st.session_state.notice = f"✅ {name} を登録リストから削除しました。"
-
-
-def add_regular_to_next_slot(name, rate):
-    st.session_state.regulars = normalize_regulars(st.session_state.regulars)
-
-    target_idx = None
-    for idx, use in enumerate(st.session_state.participate):
-        if not use:
-            target_idx = idx
-            break
-
-    if target_idx is None:
-        st.session_state.notice = "⚠️ 参加チェックが入っていない空き枠がありません。"
+def capture_settings():
+    if core.pending_match(st.session_state.model):
         return
-
-    st.session_state.players[target_idx] = (name, int(rate))
-    st.session_state.participate[target_idx] = True
-    clear_team_result()
-    request_widget_sync()
-    st.session_state.notice = f"✅ {name} を枠{target_idx + 1}に呼び出しました。"
-
-
-def request_widget_sync():
-    st.session_state.sync_widgets_from_players = True
-
-
-def apply_widget_sync_if_needed():
-    """
-    ウィジェット描画前にだけ players / participate の値を
-    name_i / rate_i / part_i へ流し込む
-    """
-    if st.session_state.sync_widgets_from_players:
-        for idx in range(10):
-            st.session_state[f"name_{idx}"] = st.session_state.players[idx][0]
-            st.session_state[f"rate_{idx}"] = int(st.session_state.players[idx][1])
-            st.session_state[f"part_{idx}"] = st.session_state.participate[idx]
-
-        st.session_state.sync_widgets_from_players = False
-
-
-def reset_all():
-    st.session_state.players = [("", 2000) for _ in range(10)]
-    st.session_state.participate = [False for _ in range(10)]
-    st.session_state.bulk_input = ""
-    st.session_state.stage = "start"
-    st.session_state.win_team = "A"
-    st.session_state.multiplier = 1.03
-    st.session_state.notice = None
-    clear_team_result()
-    request_widget_sync()
-
-
-def parse_and_apply_bulk():
-    raw = st.session_state.bulk_input or ""
-
-    s = raw.replace("\n", ",")
-    s = re.sub(r"[、；;]", ",", s)
-    entries = [e.strip() for e in s.split(",") if e.strip()]
-
-    applied = 0
-    errors = []
-    idx = 0
-
-    st.session_state.players = [("", 2000) for _ in range(10)]
-    st.session_state.participate = [False for _ in range(10)]
-
-    for e in entries:
-        if "：" in e:
-            parts = e.split("：", 1)
-        elif ":" in e:
-            parts = e.split(":", 1)
-        else:
-            errors.append(f"区切り（: または ：）が見つかりません: {e}")
-            continue
-
-        name = parts[0].strip()
-        rate_str = parts[1].strip()
-
-        if not name:
-            errors.append(f"名前が空です: {e}")
-            continue
-
-        rate_str = rate_str.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-        if not re.fullmatch(r"\d+", rate_str):
-            errors.append(f"レートが数値ではありません: {e}")
-            continue
-
-        rate = max(0, int(rate_str))
-
-        if idx < 10:
-            st.session_state.players[idx] = (name, rate)
-            st.session_state.participate[idx] = True
-            idx += 1
-            applied += 1
-        else:
-            errors.append(f"10枠を超えたためスキップ: {e}")
-
-    clear_team_result()
-    st.session_state.stage = "start"
-    request_widget_sync()
-
-    if applied > 0:
-        st.success(f"✅ {applied}人を一括反映しました（参加ON）。")
-    if errors:
-        st.warning("⚠️ 次の項目は反映できませんでした：\n- " + "\n- ".join(errors))
-
-
-def assign_teams(players_with_slot):
-    """
-    与えられた (slot, name, rate) のリストを2チームに最小差で分割。
-    片方の人数は floor(n/2)。もう片方は n - floor(n/2)。
-    """
-    n = len(players_with_slot)
-    if n < 2:
-        return [], [], None
-
-    k = n // 2
-    min_diff = float("inf")
-    best_a, best_b = [], []
-
-    for combo in itertools.combinations(players_with_slot, k):
-        team_a = list(combo)
-        team_b = [p for p in players_with_slot if p not in team_a]
-        sum_a = sum(p[2] for p in team_a)
-        sum_b = sum(p[2] for p in team_b)
-        diff = abs(sum_a - sum_b)
-
-        if diff < min_diff:
-            min_diff = diff
-            best_a, best_b = team_a, team_b
-
-    return best_a, best_b, min_diff
-
-
-def record_match_results(updated_players, played_slots, winners_slots):
-    """レート更新後の値を使って、対戦・勝利・休憩の累計を更新する。"""
-    records = st.session_state.player_records
-
-    for idx, (raw_name, rate) in enumerate(updated_players):
-        name = str(raw_name).strip()
-        if not name:
-            continue
-
-        if name not in records:
-            records[name] = {
-                "name": name,
-                "rate": int(rate),
-                "matches": 0,
-                "wins": 0,
-                "win_rate": 0.0,
-                "rests": 0,
-            }
-
-        record = records[name]
-        record["rate"] = int(rate)
-
-        if idx in played_slots:
-            record["matches"] += 1
-            if idx in winners_slots:
-                record["wins"] += 1
-        elif not st.session_state.participate[idx]:
-            record["rests"] += 1
-
-        if record["matches"] > 0:
-            record["win_rate"] = record["wins"] / record["matches"] * 100
-        else:
-            record["win_rate"] = 0.0
-
-    st.session_state.player_records = records
-
-
-def run_team_assignment():
-    sync_all_players_from_widgets()
-
-    selected = [
-        (i, n, r)
-        for i, ((n, r), use) in enumerate(zip(st.session_state.players, st.session_state.participate))
-        if use and str(n).strip() != ""
-    ]
-    n_sel = len(selected)
-
-    if n_sel >= 9:
-        clear_team_result()
-        st.session_state.stage = "start"
-        st.error("❌ 参加者が9人以上です。ゲームは最大8人までです。チェックを外して再実行してください。")
-        return
-
-    if n_sel < 2:
-        clear_team_result()
-        st.session_state.stage = "start"
-        st.warning("⚠️ 2人以上選んでください。（名前が空欄だと無視されます）")
-        return
-
-    a, b, diff = assign_teams(selected)
-    st.session_state.best_team_a = a
-    st.session_state.best_team_b = b
-    st.session_state.last_diff = diff
-    st.session_state.stage = "assigned_done"
-    st.success(f"💡 チーム分けしました！ 参加人数: {n_sel} / レート差: {diff}")
-
-
-def update_ratings():
-    sync_all_players_from_widgets()
-
-    if not st.session_state.best_team_a or not st.session_state.best_team_b:
-        st.warning("⚠️ 先にチーム分けをしてください。")
-        return
-
-    win_team = st.session_state.win_team
-    multiplier = float(st.session_state.multiplier)
-
-    winners_slots = {
-        slot for (slot, _, _) in (
-            st.session_state.best_team_a if win_team == "A" else st.session_state.best_team_b
-        )
+    st.session_state.model["settings"] = {
+        "decrease": st.session_state.decrease,
+        "percent": float(st.session_state.percent),
+        "streak_bonus": st.session_state.streak_bonus,
     }
-    played_slots = {
-        slot
-        for (slot, _, _) in (
-            st.session_state.best_team_a + st.session_state.best_team_b
-        )
-    }
+    core.touch(st.session_state.model)
 
-    updated_players = list(st.session_state.players)
-    for i, (n, r) in enumerate(st.session_state.players):
-        if i in winners_slots and str(n).strip() != "":
-            new_rate = int(round(float(r) * multiplier))
-            updated_players[i] = (n, new_rate)
 
-    st.session_state.players = updated_players
-    record_match_results(updated_players, played_slots, winners_slots)
-    st.session_state.stage = "updated"
+def capture_winner(match_id):
+    match = core.pending_match(st.session_state.model)
+    if match and match["id"] == match_id:
+        match["selected_winner"] = st.session_state[f"winner_{match_id}"]
+        core.touch(st.session_state.model)
 
-    # 同じ試合結果を誤って複数回適用できないよう、結果を消す。
-    clear_team_result()
-    request_widget_sync()
-    st.session_state.notice = "✅ レートを更新しました！ 入力欄の数値に反映されています。"
+
+def sync_inputs():
+    if not st.session_state.get("sync_inputs", True):
+        return
+    model = st.session_state.model
+    for i, row in enumerate(model["roster"]):
+        for prefix, field in (("name", "name"), ("rate", "rate"), ("part", "active")):
+            st.session_state[f"{prefix}_{i}"] = row[field]
+    st.session_state.bulk_text = model["bulk_text"]
+    for key, value in model["settings"].items():
+        st.session_state[key] = value
+    match = core.pending_match(model)
+    if match:
+        st.session_state[f"winner_{match['id']}"] = match.get("selected_winner")
+    st.session_state.sync_inputs = False
+
+
+if "store_token" not in st.session_state:
+    st.session_state.store_token = uuid.uuid4().hex
+    st.session_state.hydrated = False
+
+payload = core.export_state(st.session_state.model) if st.session_state.hydrated else None
+reply = browser_store(token=st.session_state.store_token, payload=payload, key="browser_store", default=None)
+if not st.session_state.hydrated:
+    if not reply or reply.get("token") != st.session_state.store_token:
+        st.info("このブラウザの保存データを確認しています。しばらく表示が変わらない場合は再読み込みしてください。")
+        st.stop()
+    raw = reply.get("raw")
+    try:
+        if reply.get("error"):
+            raise ValueError("ブラウザの保存領域が利用できません。保存を許可して再読み込みするか、一時利用を選んでください。")
+        restored = core.import_state(raw) if raw is not None else core.new_state()
+    except ValueError as error:
+        st.error(str(error))
+        if raw:
+            st.download_button("読み込めなかった保存データを退避", raw, "team-balancer-recovery.txt")
+        agree = st.checkbox("保存されていたデータを退避済み、または新規で開始してよい")
+        if not st.button("一時利用を開始" if reply.get("error") else "新しいデータで開始", disabled=not agree):
+            st.stop()
+        restored = core.new_state()
+    st.session_state.model = restored
+    st.session_state.hydrated = True
+    st.session_state.sync_inputs = True
     st.rerun()
 
+sync_inputs()
+model = st.session_state.model
+match = core.pending_match(model)
+locked = match is not None
+notice = st.session_state.pop("notice", None)
+if notice:
+    getattr(st, notice[0])(notice[1])
 
-# =========================
-# 描画前同期
-# =========================
-apply_widget_sync_if_needed()
-
-if st.session_state.notice:
-    st.success(st.session_state.notice)
-    st.session_state.notice = None
-
-
-# =========================
-# タイトル
-# =========================
-st.markdown(
-    f"""
-    <h1 style="margin-bottom:0.2rem;">🎮 スプラ3オートバランス！</h1>
-    <div style="font-size:0.95rem; opacity:0.85; margin-bottom:1rem;">
-      by <a href="{X_URL}" target="_blank" style="text-decoration:none;">あすとらふぃーだ</a>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown("""
-ゲームのレートに応じて最適なチーム分けを行い、勝利チームのレートを更新できます ✨
-
----
-
-### 🕹️ つかいかた
-- 下の **「🧩 一括入力」** に `名前：レート, 名前：レート, ...` の形式で入れて **反映** を押すと、
-  プレイヤー1から順に **名前** と **レート** が一括反映されます。
-- 一括反映された枠は **参加する** が自動でONになります。不要な枠はOFFにしてください。
-- 「✅ チームを分ける」を押すと、**参加ONかつ名前が入っている人だけ**でチーム分けします。
-- 個別入力はフォーム内で行うため、日本語変換中に画面が再実行されにくくなっています。
-- Enterキーで確定しても入力内容は保持されます。
-- **本アプリは非公式のファンメイドツールです**
-""")
+st.title("🎮 スプラ3オートバランス！")
+st.markdown("by [あすとらふぃーだ](https://x.com/Ascalaphidae) · 非公式ファンメイドツール")
+st.caption("参加者を選ぶ → チーム分け → 結果を登録。入力・設定・記録は、このブラウザに自動保存します。")
+metrics = st.columns(3)
+metrics[0].metric("登録プレイヤー", len(model["profiles"]))
+metrics[1].metric("結果登録済み", sum(m["status"] == "recorded" for m in model["history"]))
+metrics[2].metric("結果未入力", int(locked))
 
 
-# =========================
-# 一括入力 UI
-# =========================
-st.subheader("🧩 一括入力（プレイヤー名とレート）")
-st.caption("例： あすふぃだ：2630, イシガケ：2000, ウスバキ：1800（全角/半角の：, 、 ; 改行などもOK）")
-
-st.text_area(
-    "形式：名前：レート をカンマ等で区切って入力（最大10人まで）",
-    key="bulk_input",
-    height=90,
-    placeholder="あすふぃだ：2630, イシガケ：2000, ウスバキ：1800"
-)
-
-bulk_col1, bulk_col2 = st.columns([1, 1])
-with bulk_col1:
-    if st.button("反映", type="primary", use_container_width=True):
-        parse_and_apply_bulk()
-        st.rerun()
-
-with bulk_col2:
-    st.button(
-        "🔄 入力をリセット",
-        use_container_width=True,
-        on_click=reset_all,
-    )
+def changes_table(changes):
+    return pd.DataFrame([{
+        "名前": c["name"], "結果": "勝ち" if c["won"] else "負け",
+        "試合前": c["before"], "変動": f"{c['delta']:+d}", "試合後": c["after"],
+        "連勝・連敗": f"{abs(c['streak'])}連{'勝' if c['streak'] > 0 else '敗'}",
+    } for c in changes])
 
 
-# =========================
-# 個別入力
-# =========================
-st.subheader("🦑 プレイヤー情報の入力（個別） 🐙")
-st.markdown("各プレイヤーの名前・レート・参加可否を調整し、最後にチーム分けを押してください。")
+if match:
+    st.warning(f"第{match['number']}試合は結果未入力です。結果を登録すると次のチーム分けに進めます。")
+    columns = st.columns(2)
+    for col, label, field in zip(columns, ("🟩 チームA", "🟥 チームB"), ("team_a", "team_b")):
+        with col:
+            st.subheader(label)
+            st.dataframe(pd.DataFrame([{"名前": p["name"], "レート": p["rate"]} for p in match[field]]),
+                         use_container_width=True, hide_index=True)
+            st.write(f"合計レート：{sum(p['rate'] for p in match[field]):,}")
+    st.caption(f"合計レート差：{match['diff']:,} · 休憩：" + ("、".join(match["resting"]) or "なし"))
+    if (len(match["team_a"]) + len(match["team_b"])) % 2:
+        st.info("参加人数が奇数なので、チームの人数が異なります。人数差による有利・不利はレート差だけでは調整できません。")
+    settings = match["settings"]
+    st.caption(f"この試合の設定：変動率 {settings['percent']:g}% / 敗北時の減少 {'ON' if settings['decrease'] else 'OFF'} / 連勝・連敗補正 {'ON' if settings['streak_bonus'] else 'OFF'}")
+    winner = st.radio("勝利チームを選んでください", ["A", "B"], index=None,
+                      key=f"winner_{match['id']}", horizontal=True,
+                      on_change=capture_winner, args=(match["id"],))
+    if winner:
+        st.dataframe(changes_table(core.preview_result(model, match, winner)),
+                     hide_index=True, use_container_width=True)
+    st.button("🏆 この結果を登録する", type="primary", disabled=winner is None,
+              on_click=action, args=(core.record_result, match["id"], winner), use_container_width=True)
+    with st.expander("この試合を中止する・チーム分けをやり直す"):
+        st.caption("中止した試合は勝敗・レート・休憩回数に加算しません。中止の履歴は残ります。")
+        confirmed = st.checkbox("この試合を記録せずに中止する", key=f"cancel_{match['id']}")
+        st.button("試合を中止", disabled=not confirmed, on_click=action, args=(core.cancel_match, match["id"]))
+else:
+    last = next((m for m in reversed(model["history"]) if m["status"] == "recorded"), None)
+    if last:
+        st.success(f"第{last['number']}試合を記録済み · 勝利チーム {last['winner']} · {last['recorded_at'][11:19]}")
+        with st.expander("直前の変動を確認・入力ミスを訂正"):
+            st.dataframe(changes_table(last["changes"]), hide_index=True, use_container_width=True)
+            st.caption("直前の結果と休憩回数を戻し、同じチームで結果を再入力できます。新しい試合のチーム分け前に操作してください。")
+            undo = st.checkbox("直前の結果を取り消して再入力する")
+            st.button("直前の結果を再入力", disabled=not undo, on_click=action, args=(core.reopen_last_result,))
 
-regular_options = {
-    f"{item['name']}：{item['rate']}": item
-    for item in normalize_regulars(st.session_state.regulars)
-}
-regular_call_submitted = False
-save_submitted = False
+participants_tab, records_tab, backup_tab, settings_tab = st.tabs(["🦑 参加者", "📊 プレイヤーと試合記録", "💾 バックアップ", "⚙️ レート設定"])
 
-# フォーム内の編集では即時再実行されないため、日本語IMEの変換状態が保たれやすい。
-with st.form("player_form", clear_on_submit=False):
-    for row_start in range(0, 10, 5):
+with participants_tab:
+    with st.expander("🧩 一括入力"):
+        st.caption("名前：レート を改行またはカンマで区切れます。全角数字もOK。最大10人（対戦は8人まで）。レート内の桁区切りカンマは省いてください。")
+        st.text_area("名前とレート", key="bulk_text", height=100, disabled=locked,
+                     on_change=capture_bulk, placeholder="あすふぃだ：２６３０\nイシガケ：２０００")
+        st.button("一括入力を反映", disabled=locked, on_click=apply_current_bulk)
+
+    if model["profiles"]:
+        with st.expander("📚 過去のプレイヤーを空き枠へ呼び出す"):
+            name = st.selectbox("プレイヤー", sorted(model["profiles"]), key="profile_to_load", disabled=locked)
+            source = st.radio("呼び出すレート", ["最新レート", "初期レート"], horizontal=True, disabled=locked)
+            p = model["profiles"][name]
+            st.caption(f"初期 {p['initial_rate']:,} / 最新 {p['rate']:,}")
+            st.button("空の枠へ追加", disabled=locked, on_click=action,
+                      args=(core.load_profile, name, source == "初期レート"))
+
+    st.subheader("1. 名前を入力")
+    st.caption("先に名前をまとめて入力できます。名前がある枠で参加OFFにすると、その試合は休憩として数えます。")
+    for start in (0, 5):
         cols = st.columns(5)
         for offset, col in enumerate(cols):
-            i = row_start + offset
+            i = start + offset
             with col:
-                st.markdown(f"**枠{i+1}**")
-                st.text_input(
-                    f"名前{i+1}",
-                    key=f"name_{i}",
-                    placeholder="プレイヤー名",
-                )
-                st.number_input(
-                    f"レート{i+1}",
-                    min_value=0,
-                    step=50,
-                    key=f"rate_{i}",
-                )
-                st.checkbox(
-                    "参加する",
-                    key=f"part_{i}",
-                )
+                st.text_input(f"名前{i + 1}", key=f"name_{i}", max_chars=80,
+                              disabled=locked, on_change=capture_roster, placeholder=f"枠{i + 1}")
 
-    form_cols = st.columns([1, 1, 1])
-    with form_cols[0]:
-        save_submitted = st.form_submit_button(
-            "入力を保存",
-            use_container_width=True,
-        )
-    with form_cols[1]:
-        assign_submitted = st.form_submit_button(
-            "✅ チームを分ける",
-            type="primary",
-            use_container_width=True,
-        )
-    with form_cols[2]:
-        if regular_options:
-            st.selectbox(
-                "登録済みから呼び出す",
-                list(regular_options.keys()),
-                key="regular_to_load",
-            )
-            regular_call_submitted = st.form_submit_button(
-                "空き枠へ呼び出す",
-                use_container_width=True,
-            )
-        else:
-            st.caption("登録済みの人がいると、ここから空き枠へ呼び出せます。")
+    st.subheader("2. レートと参加を選択")
+    st.caption("レートも全角のまま入力できます（例：２６３０）。入力を確定すると自動保存されます。初期レートは「入力を登録」または初回チーム分け時の値です。")
+    for start in (0, 5):
+        cols = st.columns(5)
+        for offset, col in enumerate(cols):
+            i = start + offset
+            with col:
+                label = model["roster"][i]["name"].strip() or f"枠{i + 1}"
+                st.text(label)
+                st.text_input(f"レート{i + 1}", key=f"rate_{i}", max_chars=20,
+                              disabled=locked, on_change=capture_roster)
+                st.checkbox(f"参加{i + 1}", key=f"part_{i}", disabled=locked, on_change=capture_roster)
+    selected_count = sum(bool(r["name"].strip()) and r["active"] for r in model["roster"])
+    st.write(f"参加 {selected_count}人 / 最大8人")
+    left, right = st.columns(2)
+    left.button("入力を登録（初期・最新レートを保存）", on_click=action,
+                args=(core.commit_roster,), disabled=locked, use_container_width=True)
+    right.button("✅ チームを分ける", type="primary", on_click=action,
+                 args=(core.create_match,), disabled=locked, use_container_width=True)
+    with st.expander("参加者の入力枠を空にする"):
+        st.caption("プレイヤーの初期・最新レート、勝敗、試合履歴は残ります。")
+        clear = st.checkbox("10枠の名前・レート・参加設定を空にする", disabled=locked)
+        st.button("入力枠を空にする", disabled=locked or not clear,
+                  on_click=action, args=(core.reset_roster,))
 
-if regular_call_submitted:
-    sync_all_players_from_widgets()
-    selected_regular = regular_options.get(st.session_state.get("regular_to_load"))
-    if selected_regular:
-        add_regular_to_next_slot(selected_regular["name"], selected_regular["rate"])
-        st.rerun()
-elif save_submitted:
-    sync_all_players_from_widgets()
-    clear_team_result()
-    st.session_state.notice = "✅ 入力内容を保存しました。"
-    st.rerun()
-elif assign_submitted:
-    run_team_assignment()
+with records_tab:
+    st.subheader("プレイヤー記録")
+    st.caption("同じ名前を同じプレイヤーとして集計します。初期レートは最初の登録時の値で、その後の更新でも保持します。休憩は結果登録時に数え、連勝・連敗は中断しません。")
+    if model["profiles"]:
+        rows = []
+        for p in model["profiles"].values():
+            rows.append({"名前": p["name"], "初期レート": p["initial_rate"], "最新レート": p["rate"],
+                         "初期からの増減": p["rate"] - p["initial_rate"], "試合": p["matches"],
+                         "勝ち": p["wins"], "負け": p["losses"],
+                         "勝率": f"{100 * p['wins'] / p['matches']:.1f}%" if p["matches"] else "—",
+                         "休憩": p["rests"], "連勝・連敗": f"{abs(p['streak'])}連{'勝' if p['streak'] > 0 else '敗'}" if p["streak"] else "—"})
+        frame = pd.DataFrame(rows)
+        st.dataframe(frame, hide_index=True, use_container_width=True)
+        safe_csv = frame.copy()
+        safe_csv["名前"] = safe_csv["名前"].map(lambda x: "'" + x if x.startswith(("=", "+", "-", "@")) else x)
+        st.download_button("プレイヤー記録をCSVで保存", safe_csv.to_csv(index=False).encode("utf-8-sig"),
+                           "team-balancer-records.csv", "text/csv")
+    else:
+        st.info("入力を登録するとプレイヤーがここに保存されます。")
+    st.subheader("試合履歴")
+    if model["history"]:
+        history_rows = [{"試合": m["number"], "日時": m["created_at"].replace("T", " ")[:19],
+                         "状態": {"pending": "結果未入力", "recorded": "記録済み", "void": "中止"}[m["status"]],
+                         "チームA": "、".join(p["name"] for p in m["team_a"]),
+                         "チームB": "、".join(p["name"] for p in m["team_b"]),
+                         "勝利": m["winner"] or "—", "休憩": "、".join(m["resting"])}
+                        for m in reversed(model["history"])]
+        st.dataframe(pd.DataFrame(history_rows), hide_index=True, use_container_width=True)
+        chosen = st.selectbox("レート変動を確認する試合", list(reversed(model["history"])),
+                              format_func=lambda m: f"第{m['number']}試合 · {m['created_at'][:19]}")
+        if chosen["status"] == "recorded":
+            st.dataframe(changes_table(chosen["changes"]), hide_index=True, use_container_width=True)
+    else:
+        st.info("チーム分けをすると試合履歴が作られます。")
 
+with backup_tab:
+    st.subheader("保存とバックアップ")
+    st.write("同じ端末・同じブラウザ・同じアプリURLで、次回も自動復元します。ブラウザのデータ削除やシークレットモードでは保存が失われるため、大事な記録はバックアップしてください。")
+    st.caption("入力中の文字はEnterまたは入力欄からフォーカスを移した時点で保存対象になります。画面上部の「保存済み」を確認してから閉じてください。端末間の自動共有はありません。")
+    st.download_button("📥 全データのバックアップ", core.export_state(model).encode("utf-8"),
+                       "team-balancer-backup.json", "application/json", use_container_width=True)
+    uploaded = st.file_uploader("JSONバックアップから復元", type=["json"], disabled=locked)
+    replace = st.checkbox("バックアップの内容で現在の入力・全記録を置き換える", disabled=locked)
+    if st.button("バックアップを復元", disabled=locked or uploaded is None or not replace):
+        try:
+            restored = core.import_state(uploaded.getvalue().decode("utf-8-sig"))
+            core.touch(restored)
+            st.session_state.model = restored
+            st.session_state.sync_inputs = True
+            st.session_state.notice = ("success", "バックアップを復元しました。")
+            st.rerun()
+        except (ValueError, UnicodeDecodeError) as error:
+            st.error(str(error))
+    with st.expander("旧版の登録リスト（テキスト）を取り込む"):
+        st.caption("旧版の 名前：レート のテキストに対応します。既存プレイヤーの初期レートは保持し、最新レートを更新します。")
+        legacy = st.text_area("旧版の登録リスト", disabled=locked)
+        if st.button("登録リストを取り込む", disabled=locked):
+            try:
+                imported = core.parse_bulk(legacy, limit=None)
+                for row in imported:
+                    name, rate = row["name"], int(row["rate"])
+                    if name not in model["profiles"]:
+                        model["profiles"][name] = core.profile(name, rate)
+                    else:
+                        model["profiles"][name]["rate"] = rate
+                core.sync_rates(model, {r["name"] for r in imported})
+                core.touch(model)
+                st.session_state.sync_inputs = True
+                st.session_state.notice = ("success", f"{len(imported)}人の登録リストを取り込みました。")
+                st.rerun()
+            except ValueError as error:
+                st.error(str(error))
 
-# =========================
-# 状況に応じた画像
-# =========================
-if st.session_state.stage in ("start", "updated"):
-    img_url = image_to_data_uri("character_start.png")
-elif st.session_state.stage == "assigned_done":
-    img_url = image_to_data_uri("character_assigned.png")
-else:
-    img_url = None
+with settings_tab:
+    st.subheader("レート変動の設定")
+    st.checkbox("負けたときにレートを減らす（標準ON）", key="decrease", on_change=capture_settings, disabled=locked)
+    st.number_input("基本変動率（%）", min_value=0.0, max_value=20.0, step=0.5,
+                    key="percent", on_change=capture_settings, disabled=locked)
+    st.checkbox("連勝・連敗で変動を大きくする", key="streak_bonus", on_change=capture_settings, disabled=locked)
+    st.markdown("連勝・連敗の **1回目は1倍、2回目は1.25倍、3回目は1.5倍、4回目は1.75倍、5回目以降は2倍**。勝敗が変わると1回目から数え直します。休憩は連勝・連敗を中断しません。")
+    st.caption("例：レート2000・変動率3%なら、初回は±60、2連続なら±75。実際の計算は各試合直前のレートが基準です。小数は四捨五入、最低変動1（変動率0%は0）、レート範囲0〜999999。減少OFFでは負けてもレートは変わりません。")
+    if locked:
+        st.info("結果未入力の試合があります。設定は結果登録後に変更できます。")
 
-if img_url:
-    components.html(f"""
-    <script>
-    function confirmAndRedirect() {{
-        if (confirm('あすとらふぃーだのチャンネルを表示する？')) {{
-            window.open('{YOUTUBE_URL}', '_blank');
-        }}
-    }}
-    </script>
-    <div style='position: fixed; bottom: 1rem; right: 1rem; z-index: 5;'>
-        <img src='{img_url}' width='170' style='opacity: 0.85; border-radius: 10px; cursor: pointer;' onclick='confirmAndRedirect()'>
-    </div>
-    """, height=260)
-else:
-    st.caption("画像を表示できません。assetsフォルダと画像ファイル名を確認してください。")
-
-
-# =========================
-# チーム表示
-# =========================
-if st.session_state.best_team_a and st.session_state.best_team_b:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("### 🟩 チームA")
-        df_a = pd.DataFrame(
-            [(n, r) for (_, n, r) in st.session_state.best_team_a],
-            columns=["名前", "レート"]
-        )
-        st.dataframe(df_a, use_container_width=True)
-        st.markdown(f"**合計パワー：{int(sum(r for (_, _, r) in st.session_state.best_team_a))}**")
-
-    with col2:
-        st.markdown("### 🟥 チームB")
-        df_b = pd.DataFrame(
-            [(n, r) for (_, n, r) in st.session_state.best_team_b],
-            columns=["名前", "レート"]
-        )
-        st.dataframe(df_b, use_container_width=True)
-        st.markdown(f"**合計パワー：{int(sum(r for (_, _, r) in st.session_state.best_team_b))}**")
-
-    if st.session_state.last_diff is not None:
-        st.caption(f"レート差：{st.session_state.last_diff}")
-
-    st.divider()
-    st.subheader("🏆 勝利チームのレート更新")
-
-    st.radio(
-        "どちらのチームが勝ちましたか？",
-        ["A", "B"],
-        key="win_team",
-        horizontal=True
-    )
-
-    st.number_input(
-        "更新倍率（例：1.03 = 3%加算）",
-        min_value=0.0,
-        value=float(st.session_state.multiplier),
-        step=0.01,
-        key="multiplier"
-    )
-
-    if st.button("📈 レートを更新する"):
-        update_ratings()
-
-
-# =========================
-# 対戦記録
-# =========================
 st.divider()
-st.subheader("📊 対戦記録")
-st.markdown("レート更新時に、プレイヤーごとの試合・勝利・休憩を累計します。")
-st.caption("レートは更新後の最新値です。記録はこの画面を開いている間だけ保持されます。")
-
-if st.session_state.player_records:
-    record_rows = []
-    for record in st.session_state.player_records.values():
-        record_rows.append({
-            "プレイヤー名": record["name"],
-            "最新レート": record["rate"],
-            "試合数": record["matches"],
-            "勝利数": record["wins"],
-            "勝率": f"{record['win_rate']:.1f}%",
-            "休憩回数": record["rests"],
-        })
-
-    st.dataframe(
-        pd.DataFrame(record_rows),
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    st.info("まだ対戦記録はありません。レートを更新すると記録されます。")
-
-
-# =========================
-# 登録機能
-# =========================
-st.divider()
-st.subheader("💾 登録機能")
-st.markdown("常連さんの名前とレートを登録しておき、空いている一番手前の枠へ呼び出せます。")
-st.caption("呼び出しは、上のプレイヤー情報フォーム内にある「登録済みから呼び出す」から行えます。")
-st.caption("登録リストはこの画面を開いている間は保持されます。閉じた後も使う場合は、エクスポートしたテキストを次回インポートしてください。")
-
-with st.form("regular_form", clear_on_submit=False):
-    reg_col1, reg_col2, reg_col3 = st.columns([2, 1, 1])
-    with reg_col1:
-        st.text_input(
-            "登録する名前",
-            key="regular_name",
-            placeholder="プレイヤー名",
-        )
-    with reg_col2:
-        st.number_input(
-            "登録するレート",
-            min_value=0,
-            step=50,
-            key="regular_rate",
-            value=2000,
-        )
-    with reg_col3:
-        st.markdown("&nbsp;", unsafe_allow_html=True)
-        st.form_submit_button(
-            "登録する",
-            type="primary",
-            use_container_width=True,
-            on_click=save_regular_from_widgets,
-        )
-
-regulars = normalize_regulars(st.session_state.regulars)
-st.session_state.regulars = regulars
-
-if regulars:
-    st.markdown("#### 登録済み")
-    for idx, item in enumerate(regulars):
-        name = item["name"]
-        rate = item["rate"]
-        row_cols = st.columns([3, 1, 1])
-        with row_cols[0]:
-            st.markdown(f"**{name}**")
-        with row_cols[1]:
-            st.markdown(f"`{rate}`")
-        with row_cols[2]:
-            st.button(
-                "削除",
-                key=f"regular_delete_{idx}_{name}",
-                use_container_width=True,
-                on_click=delete_regular,
-                args=(name,),
-            )
-else:
-    st.info("まだ登録されていません。名前とレートを入力して登録してください。")
-
-export_text = regulars_to_text()
-st.download_button(
-    "登録リストをエクスポート",
-    data=export_text,
-    file_name="team-balancer-regulars.txt",
-    mime="text/plain",
-    use_container_width=True,
-    disabled=not bool(export_text),
-)
-
-with st.expander("登録リストをインポート"):
-    st.caption("エクスポートしたテキスト、または `名前：レート` を1行ずつ入力したテキストを貼り付けてください。")
-    st.text_area(
-        "インポートする登録リスト",
-        key="regular_import_text",
-        height=120,
-        placeholder="あすふぃだ：2630\nイシガケ：2000",
-    )
-    st.button(
-        "インポートする",
-        use_container_width=True,
-        on_click=import_regulars,
-    )
+if (APP_DIR / "assets" / ("character_assigned.png" if locked else "character_start.png")).is_file():
+    col, _ = st.columns([1, 4])
+    with col:
+        st.image(str(APP_DIR / "assets" / ("character_assigned.png" if locked else "character_start.png")), width=150)
+st.caption("非公式ファンメイドツール · by あすとらふぃーだ")
