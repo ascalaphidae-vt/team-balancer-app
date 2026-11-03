@@ -129,8 +129,9 @@ model = st.session_state.model
 match = core.pending_match(model)
 locked = match is not None
 notice = st.session_state.pop("notice", None)
+notice_slot = st.empty()  # Keep tabs at a stable position when a notice appears/disappears.
 if notice:
-    getattr(st, notice[0])(notice[1])
+    getattr(notice_slot, notice[0])(notice[1])
 
 st.title("🎮 スプラ3オートバランス！")
 st.markdown("by [あすとらふぃーだ](https://x.com/Ascalaphidae) · 非公式ファンメイドツール")
