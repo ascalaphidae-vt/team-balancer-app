@@ -66,10 +66,24 @@ def capture_winner(match_id):
         core.touch(st.session_state.model)
 
 
+def save_profile_edit(name, keys):
+    values = {field: st.session_state[key] for field, key in keys.items()}
+    action(core.edit_profile, name, values)
+
+
+def merge_profile_selection(source, target, initial_key, rate_key):
+    action(core.merge_profiles, source, target,
+           st.session_state[initial_key], st.session_state[rate_key])
+
+
 def sync_inputs():
     if not st.session_state.get("sync_inputs", True):
         return
     model = st.session_state.model
+    # Drop stale selections as soon as a profile is deleted, renamed, or merged.
+    for key in ("profile_to_load", "manage_player", "merge_source", "merge_target"):
+        if st.session_state.get(key) not in model["profiles"]:
+            st.session_state.pop(key, None)
     for i, row in enumerate(model["roster"]):
         for prefix, field in (("name", "name"), ("rate", "rate"), ("part", "active")):
             st.session_state[f"{prefix}_{i}"] = row[field]
@@ -121,6 +135,7 @@ if notice:
 st.title("🎮 スプラ3オートバランス！")
 st.markdown("by [あすとらふぃーだ](https://x.com/Ascalaphidae) · 非公式ファンメイドツール")
 st.caption("参加者を選ぶ → チーム分け → 結果を登録。入力・設定・記録は、このブラウザに自動保存します。")
+st.caption("記録の手動編集・統合・削除は「📊 プレイヤーと試合記録」から行えます。")
 metrics = st.columns(3)
 metrics[0].metric("登録プレイヤー", len(model["profiles"]))
 metrics[1].metric("結果登録済み", sum(m["status"] == "recorded" for m in model["history"]))
@@ -168,8 +183,11 @@ else:
         with st.expander("直前の変動を確認・入力ミスを訂正"):
             st.dataframe(changes_table(last["changes"]), hide_index=True, use_container_width=True)
             st.caption("直前の結果と休憩回数を戻し、同じチームで結果を再入力できます。新しい試合のチーム分け前に操作してください。")
-            undo = st.checkbox("直前の結果を取り消して再入力する")
-            st.button("直前の結果を再入力", disabled=not undo, on_click=action, args=(core.reopen_last_result,))
+            blocked = last["number"] <= model.get("result_undo_blocked_through", 0)
+            if blocked:
+                st.info("プレイヤー記録を整理・編集したため、それ以前の試合結果は取り消せません。必要な数値はプレイヤー記録から手動編集できます。")
+            undo = st.checkbox("直前の結果を取り消して再入力する", disabled=blocked)
+            st.button("直前の結果を再入力", disabled=blocked or not undo, on_click=action, args=(core.reopen_last_result,))
 
 participants_tab, records_tab, backup_tab, settings_tab = st.tabs(["🦑 参加者", "📊 プレイヤーと試合記録", "💾 バックアップ", "⚙️ レート設定"])
 
@@ -183,6 +201,7 @@ with participants_tab:
     if model["profiles"]:
         with st.expander("📚 過去のプレイヤーを空き枠へ呼び出す"):
             name = st.selectbox("プレイヤー", sorted(model["profiles"]), key="profile_to_load", disabled=locked)
+            st.caption("プレイヤー記録に現在登録されている人だけを表示します。削除・統合した旧名は表示しません。")
             source = st.radio("呼び出すレート", ["最新レート", "初期レート"], horizontal=True, disabled=locked)
             p = model["profiles"][name]
             st.caption(f"初期 {p['initial_rate']:,} / 最新 {p['rate']:,}")
@@ -243,6 +262,67 @@ with records_tab:
                            "team-balancer-records.csv", "text/csv")
     else:
         st.info("入力を登録するとプレイヤーがここに保存されます。")
+
+    st.subheader("プレイヤー記録の編集・統合・削除")
+    st.caption("過去の試合履歴は当時の名前・レートのまま残します。整理・編集後は、それ以前の試合結果の取り消しを停止します。整理・編集自体は、次にデータを変更するまで直前の1回を元に戻せます。")
+    if locked:
+        st.info("未入力の試合結果を登録するか中止すると、記録を整理・編集できます。")
+    management_undo = model.get("profile_management_undo")
+    if management_undo:
+        st.button(f"↩ 直前の整理・編集を元に戻す（{management_undo['label']}）",
+                  key="undo_profile_management", disabled=locked,
+                  on_click=action, args=(core.undo_profile_management,))
+    if model["profiles"]:
+        registered_names = sorted(model["profiles"])
+        person = st.selectbox("編集・削除するプレイヤー", registered_names,
+                              key="manage_player", disabled=locked)
+        p = model["profiles"][person]
+        with st.expander("✏️ 手入力で編集する"):
+            st.caption("試合数は勝利数＋敗北数、勝率は勝敗数から自動計算します。連勝は正の数、連敗は負の数（例：3連敗は -3）、連続なしは0です。")
+            edit_prefix = f"profile_edit_{person}_{model['revision']}"
+            fields = ("name", "initial_rate", "rate", "wins", "losses", "rests", "streak")
+            edit_keys = {field: f"{edit_prefix}_{field}" for field in fields}
+            with st.form(f"{edit_prefix}_form"):
+                st.text_input("記録のプレイヤー名", value=person, key=edit_keys["name"], max_chars=80, disabled=locked)
+                col1, col2 = st.columns(2)
+                col1.text_input("記録の初期レート", value=str(p["initial_rate"]), key=edit_keys["initial_rate"], disabled=locked)
+                col2.text_input("記録の最新レート", value=str(p["rate"]), key=edit_keys["rate"], disabled=locked)
+                cols = st.columns(4)
+                for col, field, label in zip(cols, ("wins", "losses", "rests", "streak"),
+                                             ("記録の勝利数", "記録の敗北数", "記録の休憩回数", "記録の連勝・連敗")):
+                    col.number_input(label, min_value=-1_000_000_000 if field == "streak" else 0,
+                                     max_value=1_000_000_000, value=p[field], step=1,
+                                     key=edit_keys[field], disabled=locked)
+                st.form_submit_button("手動編集を保存", type="primary", disabled=locked,
+                                      on_click=save_profile_edit, args=(person, edit_keys))
+
+        with st.expander("🔗 同じ人物の記録を統合する"):
+            if len(registered_names) < 2:
+                st.info("統合には2人以上の登録が必要です。")
+            else:
+                source = st.selectbox("統合して消す名前", registered_names, key="merge_source", disabled=locked)
+                destinations = [n for n in registered_names if n != source]
+                target = st.selectbox("残す名前（統合先）", destinations, key="merge_target", disabled=locked)
+                a, b = model["profiles"][source], model["profiles"][target]
+                st.write(f"統合後：{a['wins'] + b['wins']}勝 / {a['losses'] + b['losses']}敗 / 休憩 {a['rests'] + b['rests']}回")
+                st.caption("勝敗・休憩は合算し、連勝・連敗は統合先の値を残します。同じ試合に両方の名前を入れていた場合も合算するため、必要に応じて統合後に手動で調整してください。参加者枠に両方いる場合は1枠にまとめます。")
+                merge_prefix = f"merge_{source}_{target}_{model['revision']}"
+                initial_key, rate_key = merge_prefix + "_initial", merge_prefix + "_rate"
+                for label, key, field in (("統合後の初期レート", initial_key, "initial_rate"),
+                                          ("統合後の最新レート", rate_key, "rate")):
+                    st.radio(label, ["target", "source"], horizontal=True, key=key, disabled=locked,
+                             format_func=lambda side, f=field: f"{target if side == 'target' else source}：{(b if side == 'target' else a)[f]}")
+                agreed = st.checkbox("この2つの名前は同じ人物です", key=merge_prefix + "_confirm", disabled=locked)
+                st.button("この2人の記録を統合", disabled=locked or not agreed,
+                          on_click=merge_profile_selection, args=(source, target, initial_key, rate_key))
+
+        with st.expander("🗑️ 不要なプレイヤーを削除する"):
+            st.caption("プレイヤー記録・呼び出し一覧・現在の参加者枠から外します。過去の試合履歴は残ります。")
+            agreed = st.checkbox(f"「{person}」をプレイヤー記録から削除する",
+                                 key=f"delete_{person}_{model['revision']}", disabled=locked)
+            st.button("選んだプレイヤーを削除", disabled=locked or not agreed,
+                      on_click=action, args=(core.delete_profile, person))
+
     st.subheader("試合履歴")
     if model["history"]:
         history_rows = [{"試合": m["number"], "日時": m["created_at"].replace("T", " ")[:19],
@@ -287,6 +367,7 @@ with backup_tab:
                     name, rate = row["name"], int(row["rate"])
                     if name not in model["profiles"]:
                         model["profiles"][name] = core.profile(name, rate)
+                        model.get("profile_links", {}).pop(name, None)
                     else:
                         model["profiles"][name]["rate"] = rate
                 core.sync_rates(model, {r["name"] for r in imported})
@@ -310,7 +391,7 @@ with settings_tab:
 
 st.divider()
 if (APP_DIR / "assets" / ("character_assigned.png" if locked else "character_start.png")).is_file():
-    col, _ = st.columns([1, 4])
+    _, col = st.columns([4, 1])
     with col:
         st.image(str(APP_DIR / "assets" / ("character_assigned.png" if locked else "character_start.png")), width=150)
 st.caption("非公式ファンメイドツール · by あすとらふぃーだ")

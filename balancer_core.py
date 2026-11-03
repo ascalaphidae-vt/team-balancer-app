@@ -30,6 +30,8 @@ def new_state():
 
 
 def touch(state):
+    # A management undo must not roll back unrelated changes made afterwards.
+    state.pop("profile_management_undo", None)
     state["revision"] += 1
     state["updated_at"] = now()
 
@@ -85,6 +87,7 @@ def commit_roster(state):
         name, rate = row["name"], row["rate"]
         if name not in state["profiles"]:
             state["profiles"][name] = profile(name, rate)
+            state.get("profile_links", {}).pop(name, None)
         else:
             state["profiles"][name]["rate"] = rate
         state["roster"][row["slot"]].update(name=name, rate=str(rate))
@@ -119,6 +122,8 @@ def apply_bulk(state, text):
 
 def load_profile(state, name, use_initial=False):
     require_idle(state)
+    if name not in state["profiles"]:
+        raise ValueError("そのプレイヤーは記録に登録されていません。一覧を選び直してください。")
     if any(clean_name(p["name"]) == name for p in state["roster"]):
         raise ValueError("そのプレイヤーはすでに入力されています。")
     # An inactive named player is resting, not an empty slot.
@@ -242,6 +247,8 @@ def reopen_last_result(state):
     match = next((m for m in reversed(state["history"]) if m["status"] == "recorded"), None)
     if not match:
         raise ValueError("取り消せる結果がありません。")
+    if match["number"] <= state.get("result_undo_blocked_through", 0):
+        raise ValueError("プレイヤー記録を整理・編集したため、それ以前の結果は取り消せません。必要な数値は手動編集してください。")
     # Restore only the people in that match, keeping profiles registered later.
     state["profiles"].update(deepcopy(match["profiles_before"]))
     sync_rates(state, match["profiles_before"])
@@ -257,6 +264,123 @@ def reset_roster(state):
     state["roster"] = empty_roster()
     state["bulk_text"] = ""
     touch(state)
+
+
+MANAGEMENT_KEYS = ("profiles", "roster", "bulk_text", "profile_links", "result_undo_blocked_through")
+
+
+def _management_change(state, operation, label):
+    """Commit atomically, retaining one recoverable management operation."""
+    require_idle(state)
+    candidate = deepcopy(state)
+    saved = {k: deepcopy(state.get(k, {} if k == "profile_links" else 0)) for k in MANAGEMENT_KEYS}
+    operation(candidate)
+    candidate["result_undo_blocked_through"] = max(
+        candidate.get("result_undo_blocked_through", 0),
+        max((m["number"] for m in candidate["history"] if m["status"] == "recorded"), default=0))
+    candidate["bulk_text"] = ""  # Do not leave obsolete names in the bulk-entry draft.
+    touch(candidate)
+    candidate["profile_management_undo"] = {"label": label, "data": saved}
+    state.clear()
+    state.update(candidate)
+
+
+def undo_profile_management(state):
+    require_idle(state)
+    undo = state.get("profile_management_undo")
+    if not undo:
+        raise ValueError("元に戻せる整理・編集がありません。")
+    restored = deepcopy(undo["data"])
+    state.update(restored)
+    touch(state)
+
+
+def _require_profile(state, name):
+    if name not in state["profiles"]:
+        raise ValueError("選んだプレイヤーは登録されていません。")
+
+
+def _redirect_profile(state, old_name, new_name):
+    links = state.setdefault("profile_links", {})
+    for alias, target in list(links.items()):
+        if target == old_name:
+            links[alias] = new_name
+    links[old_name] = new_name
+    if new_name is not None:
+        links.pop(new_name, None)
+
+
+def _update_roster_identity(state, old_name, new_name):
+    indexes = [i for i, r in enumerate(state["roster"]) if clean_name(r["name"]) in (old_name, new_name)]
+    if not indexes:
+        return
+    active = any(state["roster"][i]["active"] for i in indexes)
+    # Prefer the existing destination slot. Inactive named slots are never overwritten.
+    keep = next((i for i in indexes if clean_name(state["roster"][i]["name"]) == new_name), indexes[0])
+    for i in indexes:
+        state["roster"][i] = empty_roster()[0]
+    if new_name is not None:
+        state["roster"][keep] = {"name": new_name, "rate": str(state["profiles"][new_name]["rate"]), "active": active}
+
+
+def edit_profile(state, name, values):
+    def edit(s):
+        _require_profile(s, name)
+        new_name = clean_name(values["name"])
+        if not new_name:
+            raise ValueError("名前を入力してください。")
+        if new_name != name and new_name in s["profiles"]:
+            raise ValueError("その名前は登録済みです。同じ人物なら「統合」を使ってください。")
+        updated = {"name": new_name, "initial_rate": parse_rate(values["initial_rate"]),
+                   "rate": parse_rate(values["rate"])}
+        for key in ("wins", "losses", "rests", "streak"):
+            value = values[key]
+            if type(value) is not int:
+                raise ValueError("勝敗・休憩・連勝連敗は整数で入力してください。")
+            updated[key] = value
+        updated["matches"] = updated["wins"] + updated["losses"]
+        if any(not 0 <= updated[k] <= 1_000_000_000 for k in ("wins", "losses", "rests", "matches")):
+            raise ValueError("勝敗・休憩・試合数は0〜10億の範囲で入力してください。")
+        if not -updated["losses"] <= updated["streak"] <= updated["wins"]:
+            raise ValueError("連勝数は勝利数以下、連敗数は敗北数以下にしてください。")
+        _validate_profile(updated, new_name)
+        s["profiles"].pop(name)
+        s["profiles"][new_name] = updated
+        if new_name != name:
+            _redirect_profile(s, name, new_name)
+        _update_roster_identity(s, name, new_name)
+    _management_change(state, edit, "プレイヤー記録の手動編集")
+
+
+def merge_profiles(state, source, target, initial_from="target", rate_from="target"):
+    def merge(s):
+        _require_profile(s, source)
+        _require_profile(s, target)
+        if source == target:
+            raise ValueError("異なる2人を選んでください。")
+        if initial_from not in ("source", "target") or rate_from not in ("source", "target"):
+            raise ValueError("残すレートを選び直してください。")
+        a, b = s["profiles"][source], s["profiles"][target]
+        combined = deepcopy(b)
+        for key in ("matches", "wins", "losses", "rests"):
+            combined[key] = a[key] + b[key]
+        combined["initial_rate"] = (a if initial_from == "source" else b)["initial_rate"]
+        combined["rate"] = (a if rate_from == "source" else b)["rate"]
+        _validate_profile(combined, target)
+        s["profiles"][target] = combined
+        del s["profiles"][source]
+        _redirect_profile(s, source, target)
+        _update_roster_identity(s, source, target)
+    _management_change(state, merge, "プレイヤー記録の統合")
+
+
+def delete_profile(state, name):
+    def delete(s):
+        _require_profile(s, name)
+        del s["profiles"][name]
+        _redirect_profile(s, name, None)
+        _update_roster_identity(s, name, None)
+    _management_change(state, delete, "プレイヤー記録の削除")
 
 
 def export_state(state):
@@ -311,6 +435,15 @@ def import_state(raw):
             if not clean_name(name) or clean_name(name) != name:
                 raise ValueError("保存された名前が不正です。")
             _validate_profile(p, name)
+        links = s.get("profile_links", {})
+        if not isinstance(links, dict):
+            raise ValueError("統合・削除した名前の保存データが不正です。")
+        for alias, target in links.items():
+            if not clean_name(alias) or clean_name(alias) != alias or alias in s["profiles"]:
+                raise ValueError("統合・削除した名前の保存データが不正です。")
+            if target is not None and (not isinstance(target, str) or target not in s["profiles"]):
+                raise ValueError("統合先の保存データが不正です。")
+        _integer(s.get("result_undo_blocked_through", 0), high=1_000_000_000)
         ids, pending, recorded_after_pending = set(), False, False
         for index, m in enumerate(s["history"]):
             if not isinstance(m["id"], str) or m["id"] in ids or m["status"] not in ("pending", "recorded", "void"):
@@ -329,11 +462,11 @@ def import_state(raw):
             for p in a + b:
                 _integer(p["slot"], 0, 9)
                 _integer(p["rate"])
-                if p["name"] not in s["profiles"]:
+                if p["name"] not in s["profiles"] and (m["status"] == "pending" or p["name"] not in links):
                     raise ValueError("試合の参加者が登録されていません。")
                 names.append(p["name"])
             rests = m["resting"]
-            if not isinstance(rests, list) or any(n not in s["profiles"] for n in rests) or len(set(names + rests)) != len(names + rests):
+            if not isinstance(rests, list) or any(n not in s["profiles"] and (m["status"] == "pending" or n not in links) for n in rests) or len(set(names + rests)) != len(names + rests):
                 raise ValueError("参加者または休憩者が重複しています。")
             if m["diff"] != abs(sum(p["rate"] for p in a) - sum(p["rate"] for p in b)):
                 raise ValueError("チームのレート差が不正です。")
@@ -354,6 +487,19 @@ def import_state(raw):
                 expected = preview_result({"profiles": m["profiles_before"]}, m, m["winner"])
                 if m["changes"] != expected:
                     raise ValueError("レート変動の保存データが不正です。")
+        # Old result snapshots must never resurrect a removed/renamed profile.
+        for m in s["history"]:
+            if m["status"] == "recorded" and any(n not in s["profiles"] for n in m["profiles_before"]):
+                if m["number"] > s.get("result_undo_blocked_through", 0):
+                    raise ValueError("整理済みプレイヤーの取り消し範囲が不正です。")
+        undo = s.get("profile_management_undo")
+        if undo is not None:
+            if not isinstance(undo, dict) or not isinstance(undo.get("label"), str) or set(undo.get("data", {})) != set(MANAGEMENT_KEYS):
+                raise ValueError("整理を元に戻すための保存データが不正です。")
+            previous = deepcopy(s)
+            previous.pop("profile_management_undo")
+            previous.update(undo["data"])
+            import_state(export_state(previous))
         return s
     except (KeyError, TypeError, AttributeError, OverflowError, RecursionError, json.JSONDecodeError) as e:
         raise ValueError("保存データを読み込めません。正しいJSONバックアップを選んでください。") from e
