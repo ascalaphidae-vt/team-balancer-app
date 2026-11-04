@@ -20,7 +20,10 @@ def action(fn, *args):
     try:
         fn(st.session_state.model, *args)
         st.session_state.sync_inputs = True
-        st.session_state.notice = ("success", "保存しました。")
+        if fn is core.create_match:
+            st.session_state.private_to_view = core.current_private(st.session_state.model)["id"]
+        message = "プラベを終了しました。今回のメンバー表と戦績を保存し、休憩回数を0に戻しました。" if fn is core.end_private else "保存しました。"
+        st.session_state.notice = ("success", message)
     except ValueError as error:
         st.session_state.notice = ("error", str(error))
 
@@ -84,6 +87,8 @@ def sync_inputs():
     for key in ("profile_to_load", "manage_player", "merge_source", "merge_target"):
         if st.session_state.get(key) not in model["profiles"]:
             st.session_state.pop(key, None)
+    if st.session_state.get("private_to_view") not in {p["id"] for p in model.get("private_sessions", [])}:
+        st.session_state.pop("private_to_view", None)
     for i, row in enumerate(model["roster"]):
         for prefix, field in (("name", "name"), ("rate", "rate"), ("part", "active")):
             st.session_state[f"{prefix}_{i}"] = row[field]
@@ -142,6 +147,23 @@ metrics[0].metric("登録プレイヤー", len(model["profiles"]))
 metrics[1].metric("結果登録済み", sum(m["status"] == "recorded" for m in model["history"]))
 metrics[2].metric("結果未入力", int(locked))
 
+private = core.current_private(model)
+with st.container(border=True):
+    private_status, private_end = st.columns([4, 1])
+    with private_status:
+        if private:
+            count = sum(m["status"] == "recorded" and m.get("private_id") == private["id"] for m in model["history"])
+            st.write(f"🎮 第{private['number']}回プラベ：進行中 · 結果登録 {count}試合")
+            st.caption(f"開始：{private['started_at'].replace('T', ' ')[:19]} · メンバー表は「🎮 今回のプラベ」に保存します。")
+        else:
+            st.write("🎮 プラベ開始前：最初のチーム分けで、新しいプラベが始まります。")
+            st.caption("終了した回のメンバー表・戦績は「🎮 今回のプラベ」で確認できます。休憩回数はプラベごとに数えます。")
+    with private_end:
+        st.button("🏁 プラベ終了", key="end_private", use_container_width=True,
+                  disabled=private is None or locked, on_click=action, args=(core.end_private,))
+    if locked:
+        st.caption("プラベを終了する前に、未入力の試合結果を登録するか、その試合を中止してください。")
+
 
 def changes_table(changes):
     return pd.DataFrame([{
@@ -184,13 +206,13 @@ else:
         with st.expander("直前の変動を確認・入力ミスを訂正"):
             st.dataframe(changes_table(last["changes"]), hide_index=True, use_container_width=True)
             st.caption("直前の結果と休憩回数を戻し、同じチームで結果を再入力できます。新しい試合のチーム分け前に操作してください。")
-            blocked = last["number"] <= model.get("result_undo_blocked_through", 0)
+            blocked = core.result_reopen_reason(model, last)
             if blocked:
-                st.info("プレイヤー記録を整理・編集したため、それ以前の試合結果は取り消せません。必要な数値はプレイヤー記録から手動編集できます。")
-            undo = st.checkbox("直前の結果を取り消して再入力する", disabled=blocked)
-            st.button("直前の結果を再入力", disabled=blocked or not undo, on_click=action, args=(core.reopen_last_result,))
+                st.info(blocked)
+            undo = st.checkbox("直前の結果を取り消して再入力する", disabled=bool(blocked))
+            st.button("直前の結果を再入力", disabled=bool(blocked) or not undo, on_click=action, args=(core.reopen_last_result,))
 
-participants_tab, records_tab, backup_tab, settings_tab = st.tabs(["🦑 参加者", "📊 プレイヤーと試合記録", "💾 バックアップ", "⚙️ レート設定"])
+participants_tab, private_tab, records_tab, backup_tab, settings_tab = st.tabs(["🦑 参加者", "🎮 今回のプラベ", "📊 プレイヤーと試合記録", "💾 バックアップ", "⚙️ レート設定"])
 
 with participants_tab:
     with st.expander("🧩 一括入力"):
@@ -244,9 +266,41 @@ with participants_tab:
         st.button("入力枠を空にする", disabled=locked or not clear,
                   on_click=action, args=(core.reset_roster,))
 
+with private_tab:
+    st.subheader("今回・終了したプラベのメンバー一覧")
+    st.caption("歴代の累計一覧とは別の、プラベごとの表です。途中参加や途中で枠から外れたメンバーも、その回で登録・チーム分けしていれば残ります。終了後の表はその時点の記録として保存します。")
+    sessions = model.get("private_sessions", [])
+    if sessions:
+        by_id = {p["id"]: p for p in sessions}
+        selected_id = st.selectbox("表示するプラベ", list(reversed(by_id)), key="private_to_view",
+                                   format_func=lambda pid: f"第{by_id[pid]['number']}回 · {'進行中' if by_id[pid]['ended_at'] is None else '終了'} · {by_id[pid]['started_at'][:19].replace('T', ' ')}")
+        selected = by_id[selected_id]
+        finished = selected["ended_at"] is not None
+        if finished:
+            st.success(f"第{selected['number']}回プラベの終了時メンバー表")
+            st.caption(f"終了：{selected['ended_at'].replace('T', ' ')[:19]} · 表の休憩はこの回の保存値です。現在の休憩カウンターは終了時に0へ戻しています。")
+        else:
+            st.info(f"第{selected['number']}回プラベは進行中です。結果登録ごとに更新します。")
+        session_rows = [{"名前": p["name"], "開始時レート": p["initial_rate"],
+                         "終了時レート" if finished else "現在レート": p["rate"],
+                         "今回の増減": p["rate"] - p["initial_rate"], "試合": p["matches"],
+                         "勝ち": p["wins"], "負け": p["losses"],
+                         "勝率": f"{100 * p['wins'] / p['matches']:.1f}%" if p["matches"] else "—",
+                         "休憩": p["rests"]} for p in selected["members"].values()]
+        if session_rows:
+            session_frame = pd.DataFrame(session_rows)
+            st.dataframe(session_frame, key="private_members_table", hide_index=True, use_container_width=True)
+            session_csv = session_frame.copy()
+            session_csv["名前"] = session_csv["名前"].map(lambda x: "'" + x if x.startswith(("=", "+", "-", "@")) else x)
+            st.download_button("このプラベのメンバー表をCSVで保存", session_csv.to_csv(index=False).encode("utf-8-sig"),
+                               f"team-balancer-private-{selected['number']}.csv", "text/csv")
+    else:
+        st.info("最初のチーム分けで、今回のプラベの記録を開始します。")
+        st.caption("この機能の導入前の試合は、歴代の戦績・試合履歴に引き続き残ります。開始・終了の区切りがないため、今回の表へはさかのぼって分類しません。")
+
 with records_tab:
-    st.subheader("プレイヤー記録")
-    st.caption("同じ名前を同じプレイヤーとして集計します。初期レートは最初の登録時の値で、その後の更新でも保持します。休憩は結果登録時に数え、連勝・連敗は中断しません。")
+    st.subheader("歴代のプレイヤー記録（累計戦績）")
+    st.caption("勝敗・試合数・レートはプラベ終了後も保持します。休憩は今回分で、プラベ終了時に0へ戻ります。連勝・連敗は休憩やプラベ終了では中断しません。")
     if model["profiles"]:
         rows = []
         for p in model["profiles"].values():
@@ -254,7 +308,7 @@ with records_tab:
                          "初期からの増減": p["rate"] - p["initial_rate"], "試合": p["matches"],
                          "勝ち": p["wins"], "負け": p["losses"],
                          "勝率": f"{100 * p['wins'] / p['matches']:.1f}%" if p["matches"] else "—",
-                         "休憩": p["rests"], "連勝・連敗": f"{abs(p['streak'])}連{'勝' if p['streak'] > 0 else '敗'}" if p["streak"] else "—"})
+                         "今回の休憩": p["rests"], "連勝・連敗": f"{abs(p['streak'])}連{'勝' if p['streak'] > 0 else '敗'}" if p["streak"] else "—"})
         frame = pd.DataFrame(rows)
         st.dataframe(frame, hide_index=True, use_container_width=True)
         safe_csv = frame.copy()
@@ -279,7 +333,7 @@ with records_tab:
                               key="manage_player", disabled=locked)
         p = model["profiles"][person]
         with st.expander("✏️ 手入力で編集する"):
-            st.caption("試合数は勝利数＋敗北数、勝率は勝敗数から自動計算します。連勝は正の数、連敗は負の数（例：3連敗は -3）、連続なしは0です。")
+            st.caption("勝敗数は歴代の累計値です。試合数・勝率は勝敗数から自動計算します。休憩は今回分（終了時に0）。今回の勝敗表は実際の試合結果から集計します。連勝は正、連敗は負（3連敗は -3）、連続なしは0です。")
             edit_prefix = f"profile_edit_{person}_{model['revision']}"
             fields = ("name", "initial_rate", "rate", "wins", "losses", "rests", "streak")
             edit_keys = {field: f"{edit_prefix}_{field}" for field in fields}
@@ -327,6 +381,7 @@ with records_tab:
     st.subheader("試合履歴")
     if model["history"]:
         history_rows = [{"試合": m["number"], "日時": m["created_at"].replace("T", " ")[:19],
+                         "プラベ": next((f"第{p['number']}回" for p in model.get("private_sessions", []) if p["id"] == m.get("private_id")), "導入前"),
                          "状態": {"pending": "結果未入力", "recorded": "記録済み", "void": "中止"}[m["status"]],
                          "チームA": "、".join(p["name"] for p in m["team_a"]),
                          "チームB": "、".join(p["name"] for p in m["team_b"]),

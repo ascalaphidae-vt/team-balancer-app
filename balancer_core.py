@@ -26,7 +26,7 @@ def empty_roster():
 def new_state():
     return {"version": VERSION, "revision": 0, "updated_at": now(),
             "roster": empty_roster(), "profiles": {}, "history": [],
-            "settings": deepcopy(DEFAULT_SETTINGS), "bulk_text": ""}
+            "settings": deepcopy(DEFAULT_SETTINGS), "bulk_text": "", "private_sessions": []}
 
 
 def touch(state):
@@ -64,6 +64,58 @@ def require_idle(state):
         raise ValueError("結果未入力の試合があります。結果を登録するか、この試合を中止してください。")
 
 
+def current_private(state):
+    return next((p for p in reversed(state.get("private_sessions", [])) if p["ended_at"] is None), None)
+
+
+def _remember_members(state, rows):
+    private = current_private(state)
+    if private is None:
+        return
+    for row in rows:
+        name, rate = row["name"], row["rate"]
+        if name not in private["members"]:
+            private["members"][name] = profile(name, rate)
+        else:
+            private["members"][name]["rate"] = rate
+
+
+def _start_private(state, rows, started_at=None):
+    sessions = state.setdefault("private_sessions", [])
+    private = {"id": uuid.uuid4().hex, "number": len(sessions) + 1,
+               "started_at": started_at or now(), "ended_at": None, "members": {}}
+    # New private counters start at zero, including when upgrading old cumulative rests.
+    for p in state["profiles"].values():
+        p["rests"] = 0
+    sessions.append(private)
+    _remember_members(state, rows)
+    return private
+
+
+def end_private(state):
+    require_idle(state)
+    private = current_private(state)
+    if private is None:
+        raise ValueError("進行中のプラベがありません。最初のチーム分けで開始します。")
+    # Members are stored independently, so clearing live counters cannot erase this table.
+    for name, member in private["members"].items():
+        if name in state["profiles"]:
+            member["rate"] = state["profiles"][name]["rate"]
+    private["ended_at"] = now()
+    for p in state["profiles"].values():
+        p["rests"] = 0
+    touch(state)
+
+
+def result_reopen_reason(state, match):
+    private = current_private(state)
+    if private is None or match.get("private_id") != private["id"]:
+        return "終了済み、または今回より前のプラベの結果は取り消せません。必要な累計値は手動編集してください。"
+    if match["number"] <= state.get("result_undo_blocked_through", 0):
+        return "プレイヤー記録を整理・編集したため、それ以前の結果は取り消せません。必要な数値は手動編集してください。"
+    return None
+
+
 def validated_roster(state):
     result, seen = [], set()
     for i, row in enumerate(state["roster"]):
@@ -91,6 +143,7 @@ def commit_roster(state):
         else:
             state["profiles"][name]["rate"] = rate
         state["roster"][row["slot"]].update(name=name, rate=str(rate))
+    _remember_members(state, rows)
     touch(state)
 
 
@@ -162,7 +215,11 @@ def create_match(state):
         raise ValueError("参加者は2〜8人にしてください。残りの人は参加をOFFにすると休憩になります。")
     a, b, diff = assign_teams(playing)
     commit_roster(state)
+    private = current_private(state)
+    if private is None:
+        private = _start_private(state, rows)
     match = {"id": uuid.uuid4().hex, "number": len(state["history"]) + 1,
+             "private_id": private["id"],
              "created_at": now(), "status": "pending", "winner": None,
              "team_a": a, "team_b": b,
              "resting": [p["name"] for p in rows if not p["active"]],
@@ -218,6 +275,11 @@ def record_result(state, match_id, winner):
     changes = preview_result(state, match, winner)
     names = {c["name"] for c in changes} | set(match["resting"])
     before = {name: deepcopy(state["profiles"][name]) for name in names}
+    private = current_private(state)
+    if private is None or match.get("private_id") != private["id"]:
+        raise ValueError("この試合のプラベが進行中ではありません。")
+    members_before = {name: deepcopy(private["members"][name]) for name in names}
+    members_updated = deepcopy(members_before)
     updated = deepcopy(before)
     for change in changes:
         p = updated[change["name"]]
@@ -225,11 +287,18 @@ def record_result(state, match_id, winner):
         p["matches"] += 1
         p["wins" if change["won"] else "losses"] += 1
         p["streak"] = change["streak"]
+        member = members_updated[change["name"]]
+        member["rate"] = change["after"]
+        member["matches"] += 1
+        member["wins" if change["won"] else "losses"] += 1
+        member["streak"] = next_streak(member["streak"], change["won"])
     for name in match["resting"]:
         updated[name]["rests"] += 1  # Rest neither breaks nor advances a streak.
+        members_updated[name]["rests"] += 1
     state["profiles"].update(updated)
+    private["members"].update(members_updated)
     match.update(status="recorded", winner=winner, changes=changes,
-                 recorded_at=now(), profiles_before=before)
+                 recorded_at=now(), profiles_before=before, private_members_before=members_before)
     sync_rates(state, names)
     touch(state)
 
@@ -247,15 +316,18 @@ def reopen_last_result(state):
     match = next((m for m in reversed(state["history"]) if m["status"] == "recorded"), None)
     if not match:
         raise ValueError("取り消せる結果がありません。")
-    if match["number"] <= state.get("result_undo_blocked_through", 0):
-        raise ValueError("プレイヤー記録を整理・編集したため、それ以前の結果は取り消せません。必要な数値は手動編集してください。")
+    reason = result_reopen_reason(state, match)
+    if reason:
+        raise ValueError(reason)
     # Restore only the people in that match, keeping profiles registered later.
     state["profiles"].update(deepcopy(match["profiles_before"]))
+    current_private(state)["members"].update(deepcopy(match["private_members_before"]))
     sync_rates(state, match["profiles_before"])
     match.setdefault("corrections", []).append({"winner": match["winner"], "at": now()})
     match.update(status="pending", winner=None, selected_winner=None, changes=[])
     match.pop("recorded_at", None)
     match.pop("profiles_before", None)
+    match.pop("private_members_before", None)
     touch(state)
 
 
@@ -266,14 +338,14 @@ def reset_roster(state):
     touch(state)
 
 
-MANAGEMENT_KEYS = ("profiles", "roster", "bulk_text", "profile_links", "result_undo_blocked_through")
+MANAGEMENT_KEYS = ("profiles", "roster", "bulk_text", "profile_links", "result_undo_blocked_through", "private_sessions")
 
 
 def _management_change(state, operation, label):
     """Commit atomically, retaining one recoverable management operation."""
     require_idle(state)
     candidate = deepcopy(state)
-    saved = {k: deepcopy(state.get(k, {} if k == "profile_links" else 0)) for k in MANAGEMENT_KEYS}
+    saved = {k: deepcopy(state.get(k, [] if k == "private_sessions" else {} if k == "profile_links" else 0)) for k in MANAGEMENT_KEYS}
     operation(candidate)
     candidate["result_undo_blocked_through"] = max(
         candidate.get("result_undo_blocked_through", 0),
@@ -323,6 +395,21 @@ def _update_roster_identity(state, old_name, new_name):
         state["roster"][keep] = {"name": new_name, "rate": str(state["profiles"][new_name]["rate"]), "active": active}
 
 
+def _rename_private_member(state, old_name, new_name):
+    private = current_private(state)
+    if private is None or old_name not in private["members"]:
+        return
+    old = private["members"].pop(old_name)
+    if new_name in private["members"]:
+        dest = private["members"][new_name]
+        for key in ("matches", "wins", "losses", "rests"):
+            dest[key] += old[key]
+    else:
+        dest = dict(old, name=new_name)
+        private["members"][new_name] = dest
+    dest["rate"] = state["profiles"][new_name]["rate"]
+
+
 def edit_profile(state, name, values):
     def edit(s):
         _require_profile(s, name)
@@ -348,6 +435,10 @@ def edit_profile(state, name, values):
         s["profiles"][new_name] = updated
         if new_name != name:
             _redirect_profile(s, name, new_name)
+            _rename_private_member(s, name, new_name)
+        private = current_private(s)
+        if private and new_name in private["members"]:
+            private["members"][new_name].update(rate=updated["rate"], rests=updated["rests"])
         _update_roster_identity(s, name, new_name)
     _management_change(state, edit, "プレイヤー記録の手動編集")
 
@@ -370,6 +461,10 @@ def merge_profiles(state, source, target, initial_from="target", rate_from="targ
         s["profiles"][target] = combined
         del s["profiles"][source]
         _redirect_profile(s, source, target)
+        _rename_private_member(s, source, target)
+        private = current_private(s)
+        if private and target in private["members"]:
+            private["members"][target]["rate"] = combined["rate"]
         _update_roster_identity(s, source, target)
     _management_change(state, merge, "プレイヤー記録の統合")
 
@@ -411,6 +506,64 @@ def _validate_settings(s):
         raise ValueError("レート変動率は0〜20%にしてください。")
 
 
+def _validate_privates(state, legacy):
+    if legacy:
+        if any(m.get("private_id") is not None for m in state["history"]):
+            raise ValueError("プラベ一覧が保存されていません。")
+        state["private_sessions"] = []
+        pending = pending_match(state)
+        if pending:
+            # Only an unfinished legacy match can be assigned a reliable boundary.
+            rows = pending["team_a"] + pending["team_b"] + [
+                {"name": name, "rate": state["profiles"][name]["rate"]} for name in pending["resting"]]
+            private = _start_private(state, rows, started_at=pending["created_at"])
+            pending["private_id"] = private["id"]
+    sessions = state["private_sessions"]
+    if not isinstance(sessions, list):
+        raise ValueError("プラベ一覧の保存データが不正です。")
+    by_id = {}
+    for index, private in enumerate(sessions):
+        if not isinstance(private, dict) or not isinstance(private.get("id"), str) or not private["id"] or private["id"] in by_id:
+            raise ValueError("プラベの識別情報が不正です。")
+        _integer(private.get("number"), 1, 1_000_000_000)
+        if private["number"] != index + 1:
+            raise ValueError("プラベの順序が不正です。")
+        if not isinstance(private.get("started_at"), str) or not private["started_at"]:
+            raise ValueError("プラベの開始日時が不正です。")
+        if private.get("ended_at") is None:
+            if index != len(sessions) - 1:
+                raise ValueError("進行中のプラベが重複しています。")
+        elif not isinstance(private["ended_at"], str) or not private["ended_at"]:
+            raise ValueError("プラベの終了日時が不正です。")
+        members = private.get("members")
+        if not isinstance(members, dict):
+            raise ValueError("今回のメンバーの保存データが不正です。")
+        for name, member in members.items():
+            if not clean_name(name) or clean_name(name) != name:
+                raise ValueError("今回のメンバー名が不正です。")
+            _validate_profile(member, name)
+        by_id[private["id"]] = private
+    for match in state["history"]:
+        private_id = match.get("private_id")
+        if private_id is None:
+            if match["status"] == "pending":
+                raise ValueError("未入力の試合にプラベが設定されていません。")
+            continue  # Completed matches from before this feature stay in lifetime history.
+        if not isinstance(private_id, str) or private_id not in by_id:
+            raise ValueError("試合のプラベが見つかりません。")
+        private = by_id[private_id]
+        names = {p["name"] for p in match["team_a"] + match["team_b"]} | set(match["resting"])
+        if match["status"] == "pending":
+            if private["ended_at"] is not None or not names <= set(private["members"]):
+                raise ValueError("未入力試合のプラベまたはメンバーが不正です。")
+        if match["status"] == "recorded":
+            before = match.get("private_members_before")
+            if not isinstance(before, dict) or set(before) != names:
+                raise ValueError("今回の戦績を取り消すためのデータが不足しています。")
+            for name, member in before.items():
+                _validate_profile(member, name)
+
+
 def import_state(raw):
     """Unknown/malformed backups must never partially replace a working session."""
     if len(raw.encode("utf-8")) > MAX_BACKUP_BYTES:
@@ -419,6 +572,7 @@ def import_state(raw):
         s = json.loads(raw)
         if not isinstance(s, dict) or s.get("version") != VERSION:
             raise ValueError("このバージョンのバックアップではありません。")
+        legacy = "private_sessions" not in s
         _integer(s["revision"], high=1_000_000_000)
         if not isinstance(s["updated_at"], str) or not isinstance(s["bulk_text"], str):
             raise ValueError("保存データの形式が不正です。")
@@ -492,8 +646,11 @@ def import_state(raw):
             if m["status"] == "recorded" and any(n not in s["profiles"] for n in m["profiles_before"]):
                 if m["number"] > s.get("result_undo_blocked_through", 0):
                     raise ValueError("整理済みプレイヤーの取り消し範囲が不正です。")
+        _validate_privates(s, legacy)
         undo = s.get("profile_management_undo")
         if undo is not None:
+            if legacy and isinstance(undo, dict) and isinstance(undo.get("data"), dict):
+                undo["data"].setdefault("private_sessions", [])
             if not isinstance(undo, dict) or not isinstance(undo.get("label"), str) or set(undo.get("data", {})) != set(MANAGEMENT_KEYS):
                 raise ValueError("整理を元に戻すための保存データが不正です。")
             previous = deepcopy(s)

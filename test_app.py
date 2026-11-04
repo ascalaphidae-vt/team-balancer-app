@@ -123,6 +123,49 @@ class AppTests(unittest.TestCase):
         self.assertFalse(at.exception)
         self.assertEqual(at.selectbox(key="profile_to_load").options, ["ひとり"])
 
+    def test_private_end_resets_live_counter_and_keeps_separate_members_table(self):
+        s = c.new_state()
+        c.apply_bulk(s, "甲:2000,乙:2000,休憩さん:2000")
+        s["roster"][2]["active"] = False
+        at = self.start(s)
+        self.assertTrue(at.button(key="end_private").disabled)
+        self.button(at, "✅ チームを分ける").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(at.button(key="end_private").disabled)
+        m = c.pending_match(at.session_state.model)
+        at.radio(key=f"winner_{m['id']}").set_value("A").run()
+        self.button(at, "🏆 この結果を登録する").click().run()
+        self.assertFalse(at.button(key="end_private").disabled)
+        self.assertEqual(at.session_state.model["profiles"]["休憩さん"]["rests"], 1)
+        at.button(key="end_private").click().run()
+        self.assertFalse(at.exception)
+        state = at.session_state.model
+        self.assertIsNone(c.current_private(state))
+        self.assertEqual(state["profiles"]["休憩さん"]["rests"], 0)
+        self.assertEqual(state["profiles"]["甲"]["matches"], 1)
+        table = next(df.value for df in at.dataframe if "終了時レート" in df.value.columns)
+        self.assertEqual(table.loc[table["名前"] == "休憩さん", "休憩"].iloc[0], 1)
+        self.assertTrue(self.button(at, "直前の結果を再入力").disabled)
+        self.button(at, "✅ チームを分ける").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(c.current_private(at.session_state.model)["number"], 2)
+        self.assertEqual(len(at.selectbox(key="private_to_view").options), 2)
+
+    def test_private_view_restores_closed_tables_and_can_select_past_private(self):
+        s = c.new_state()
+        c.apply_bulk(s, "甲:2000,乙:2000")
+        first = c.create_match(s)
+        c.record_result(s, first["id"], "A")
+        c.end_private(s)
+        c.create_match(s)
+        at = self.start(c.import_state(c.export_state(s)))
+        self.assertFalse(at.exception)
+        at.selectbox(key="private_to_view").set_value(s["private_sessions"][0]["id"]).run()
+        self.assertFalse(at.exception)
+        table = next(df.value for df in at.dataframe if "終了時レート" in df.value.columns)
+        self.assertEqual(set(table["名前"]), {"甲", "乙"})
+        self.assertEqual(table["試合"].sum(), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
