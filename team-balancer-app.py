@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 """スプラ3オートバランス！ ブラウザ保存対応版。"""
 from pathlib import Path
+from types import ModuleType
 import uuid
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-import balancer_core as core
 from theme import apply_theme
 
 APP_DIR = Path(__file__).resolve().parent
+# Streamlit can retain imported modules across deployments. Run the deployed source
+# in its own namespace so every render uses one complete, current set of functions.
+# This also avoids reloading a shared module while another user's callback uses it.
+core = ModuleType("team_balancer_runtime_core")
+core.__file__ = str(APP_DIR / "balancer_core.py")
+exec(compile(Path(core.__file__).read_bytes(), core.__file__, "exec"), core.__dict__)
 st.set_page_config(page_title="スプラ3オートバランス！", page_icon="🦑", layout="wide")
 apply_theme()
 browser_store = components.declare_component("team_balancer_browser_store", path=str(APP_DIR / "browser_store"))
@@ -104,6 +110,20 @@ def sync_inputs():
 if "store_token" not in st.session_state:
     st.session_state.store_token = uuid.uuid4().hex
     st.session_state.hydrated = False
+
+if st.session_state.hydrated and "private_sessions" not in st.session_state.model:
+    # A live session may already have been hydrated by the previous release.
+    # Migrate before saving anything; an invalid old session remains downloadable.
+    previous_data = core.export_state(st.session_state.model)
+    try:
+        migrated = core.import_state(previous_data)
+    except ValueError as error:
+        st.error(f"保存データの移行を完了できませんでした：{error}")
+        st.download_button("現在の記録をバックアップ", previous_data.encode("utf-8"),
+                           "team-balancer-before-migration.json", "application/json")
+        st.stop()
+    st.session_state.model = migrated
+    st.session_state.sync_inputs = True
 
 payload = core.export_state(st.session_state.model) if st.session_state.hydrated else None
 reply = browser_store(token=st.session_state.store_token, payload=payload, key="browser_store", default=None)

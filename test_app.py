@@ -1,4 +1,8 @@
 from pathlib import Path
+from contextlib import contextmanager
+from copy import deepcopy
+import sys
+import types
 import unittest
 from streamlit.testing.v1 import AppTest
 import balancer_core as c
@@ -18,6 +22,93 @@ class AppTests(unittest.TestCase):
 
     def button(self, at, label):
         return next(b for b in at.button if b.label == label)
+
+    def legacy_module(self):
+        module = types.ModuleType("balancer_core")
+        module.__dict__.update({k: v for k, v in vars(c).items()
+                                if k not in ("current_private", "end_private", "result_reopen_reason")})
+        return module
+
+    @contextmanager
+    def stale_core_cache(self):
+        original = sys.modules.get("balancer_core")
+        sys.modules["balancer_core"] = self.legacy_module()
+        try:
+            yield
+        finally:
+            if original is None:
+                sys.modules.pop("balancer_core", None)
+            else:
+                sys.modules["balancer_core"] = original
+
+    def legacy_state(self, games=1):
+        state = c.new_state()
+        c.apply_bulk(state, "甲:2000,乙:2000,休憩さん:2000")
+        state["roster"][2]["active"] = False
+        for _ in range(games):
+            match = c.create_match(state)
+            c.record_result(state, match["id"], "A")
+        state.pop("private_sessions")
+        for match in state["history"]:
+            match.pop("private_id")
+            match.pop("private_members_before", None)
+        return state
+
+    def test_stale_module_does_not_break_new_ui_or_destroy_30_players_29_matches(self):
+        state = self.legacy_state(games=29)
+        for i in range(27):
+            name = f"歴代{i}"
+            state["profiles"][name] = c.profile(name, 2000)
+        original = c.export_state(state)
+        with self.stale_core_cache():
+            at = self.start(state)
+            self.assertEqual(len(at.session_state.model["profiles"]), 30)
+            self.assertEqual(len(at.session_state.model["history"]), 29)
+            migrated = at.session_state.model
+            self.assertEqual(c.export_state({k: v for k, v in migrated.items() if k != "private_sessions"}), original)
+            self.assertEqual(migrated["private_sessions"], [])
+            self.button(at, "✅ チームを分ける").click().run()
+            self.assertFalse(at.exception)
+            match = c.pending_match(at.session_state.model)
+            at.radio(key=f"winner_{match['id']}").set_value("B").run()
+            self.button(at, "🏆 この結果を登録する").click().run()
+            at.button(key="end_private").click().run()
+            self.assertFalse(at.exception)
+            self.assertEqual(len(at.session_state.model["history"]), 30)
+            self.assertEqual(at.session_state.model["profiles"]["甲"]["matches"], 30)
+            self.assertEqual(at.session_state.model["profiles"]["休憩さん"]["rests"], 0)
+
+    def test_warm_upgrade_adopts_legacy_pending_without_losing_past_results(self):
+        state = self.legacy_state()
+        # Build an old-format pending match without inventing a result.
+        pending = deepcopy(state["history"][0])
+        pending.update(id="legacy-pending", number=2, status="pending", winner=None, changes=[])
+        pending.pop("profiles_before")
+        pending.pop("recorded_at")
+        for p in pending["team_a"] + pending["team_b"]:
+            p["rate"] = state["profiles"][p["name"]]["rate"]
+        pending["diff"] = abs(sum(p["rate"] for p in pending["team_a"]) - sum(p["rate"] for p in pending["team_b"]))
+        state["history"].append(pending)
+        with self.stale_core_cache():
+            at = self.start(state)
+            self.assertFalse(at.exception)
+            self.assertEqual(len(at.session_state.model["history"]), 2)
+            self.assertEqual(c.pending_match(at.session_state.model)["id"], "legacy-pending")
+            self.assertTrue(at.button(key="end_private").disabled)
+            at.radio(key="winner_legacy-pending").set_value("A").run()
+            self.button(at, "🏆 この結果を登録する").click().run()
+            self.assertFalse(at.exception)
+            self.assertEqual(at.session_state.model["profiles"]["甲"]["matches"], 2)
+
+    def test_invalid_warm_upgrade_preserves_original_and_offers_backup(self):
+        state = self.legacy_state()
+        state["profiles"]["甲"]["matches"] = -1
+        before = c.export_state(state)
+        at = self.start(state)
+        self.assertTrue(at.error)
+        self.assertFalse(at.exception)
+        self.assertEqual(c.export_state(at.session_state.model), before)
+        self.assertEqual(len(at.get("download_button")), 1)
 
     def test_edit_assign_result_reopen_without_widget_exception(self):
         at = self.start()
