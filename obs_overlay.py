@@ -131,7 +131,7 @@ def overlay_markup(name):
     content = ""
     if name:
         size = "extra-long" if len(name) > 45 else "long" if len(name) > 22 else "medium" if len(name) > 11 else "short"
-        content = (f'<div class="leader-label">最強プレイヤー</div>'
+        content = (f'<div class="leader-label">現在の最強プレイヤー</div>'
                    f'<div class="leader-name" data-size="{size}">'
                    f'<span class="leader-crown" aria-hidden="true">👑</span><bdi>{escape(name)}</bdi></div>')
     return f'<div class="leader-overlay">{content}</div>'
