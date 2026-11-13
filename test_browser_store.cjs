@@ -5,11 +5,12 @@ const assert = require('node:assert/strict');
 const code = readFileSync(__dirname + '/browser_store/index.html', 'utf8').split('<script>')[1].split('</script>')[0];
 function fixture(raw=null, fail=null) {
   let data=raw, writes=0;
+  let obs=null;
   const events={}, messages=[], status={textContent:'',className:''};
   const parent={postMessage:m=>messages.push(m)};
   const window={parent,addEventListener:(type,fn)=>events[type]=fn,localStorage:{
-    getItem:()=>{if(fail==='read')throw Error('blocked');return data},
-    setItem:(_,value)=>{if(fail==='write')throw Error('quota');data=value;writes++}
+    getItem:key=>{if(fail==='read')throw Error('blocked');return key.endsWith(':obs') ? obs : data},
+    setItem:(key,value)=>{if(fail==='write')throw Error('quota');if(key.endsWith(':obs'))obs=value;else {data=value;writes++}}
   }};
   vm.runInNewContext(code,{window,document:{getElementById:()=>status}});
   return {render:args=>events.message({source:parent,data:{type:'streamlit:render',args}}),
@@ -66,5 +67,18 @@ let cases=0;
   f.render({token:'a',payload});
   assert.equal(f.read(),null);
   assert.match(f.status.textContent,/自動保存に失敗/); cases++;
+}
+{
+  const f=fixture(payload);
+  const obs={key:'f'.repeat(48),enabled:true};
+  f.render({token:'a',payload:null});
+  f.render({token:'a',payload,obs});
+  f.render({token:'b',payload:null});
+  assert.equal(f.messages.at(-1).value.obs.key,obs.key);
+  assert.equal(f.messages.at(-1).value.obs.enabled,true);
+  f.render({token:'b',payload,obs:{...obs,enabled:false}});
+  f.render({token:'c',payload:null});
+  assert.equal(f.messages.at(-1).value.obs.enabled,false);
+  assert.equal(f.writes(),0); cases++;
 }
 console.log(`${cases} browser storage protocol tests passed.`);

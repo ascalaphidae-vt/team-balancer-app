@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """スプラ3オートバランス！ ブラウザ保存対応版。"""
 from pathlib import Path
+from secrets import token_hex
 from types import ModuleType
 import uuid
 
@@ -9,15 +10,20 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from theme import apply_theme
+from obs_overlay import HEARTBEAT, overlay_feeds, show_overlay, strongest_player, valid_key
 
 APP_DIR = Path(__file__).resolve().parent
+st.set_page_config(page_title="スプラ3オートバランス！", page_icon="🦑", layout="wide")
+if "obs" in st.query_params:
+    show_overlay(st.query_params["obs"])
+    st.stop()
+
 # Streamlit can retain imported modules across deployments. Run the deployed source
 # in its own namespace so every render uses one complete, current set of functions.
 # This also avoids reloading a shared module while another user's callback uses it.
 core = ModuleType("team_balancer_runtime_core")
 core.__file__ = str(APP_DIR / "balancer_core.py")
 exec(compile(Path(core.__file__).read_bytes(), core.__file__, "exec"), core.__dict__)
-st.set_page_config(page_title="スプラ3オートバランス！", page_icon="🦑", layout="wide")
 apply_theme()
 browser_store = components.declare_component("team_balancer_browser_store", path=str(APP_DIR / "browser_store"))
 
@@ -107,6 +113,18 @@ def sync_inputs():
     st.session_state.sync_inputs = False
 
 
+def set_obs_enabled(enabled):
+    key = st.session_state.obs_key
+    owner = st.session_state.store_token
+    if enabled:
+        key = key or token_hex(24)
+        overlay_feeds().start(key, owner, strongest_player(core.pending_match(st.session_state.model)))
+        st.session_state.obs_key = key
+    elif key:
+        overlay_feeds().stop(key, owner)
+    st.session_state.obs_enabled = enabled
+
+
 if "store_token" not in st.session_state:
     st.session_state.store_token = uuid.uuid4().hex
     st.session_state.hydrated = False
@@ -126,7 +144,13 @@ if st.session_state.hydrated and "private_sessions" not in st.session_state.mode
     st.session_state.sync_inputs = True
 
 payload = core.export_state(st.session_state.model) if st.session_state.hydrated else None
-reply = browser_store(token=st.session_state.store_token, payload=payload, key="browser_store", default=None)
+obs_preferences = None
+if st.session_state.hydrated:
+    st.session_state.setdefault("obs_key", "")
+    st.session_state.setdefault("obs_enabled", False)
+    obs_preferences = {"key": st.session_state.obs_key, "enabled": st.session_state.obs_enabled}
+reply = browser_store(token=st.session_state.store_token, payload=payload, obs=obs_preferences,
+                      key="browser_store", default=None)
 if not st.session_state.hydrated:
     if not reply or reply.get("token") != st.session_state.store_token:
         st.info("このブラウザの保存データを確認しています。しばらく表示が変わらない場合は再読み込みしてください。")
@@ -145,6 +169,11 @@ if not st.session_state.hydrated:
             st.stop()
         restored = core.new_state()
     st.session_state.model = restored
+    obs = reply.get("obs")
+    if isinstance(obs, dict) and valid_key(obs.get("key")):
+        st.session_state.obs_key = obs["key"]
+        if obs.get("enabled") is True:
+            set_obs_enabled(True)
     st.session_state.hydrated = True
     st.session_state.sync_inputs = True
     st.rerun()
@@ -232,7 +261,9 @@ else:
             undo = st.checkbox("直前の結果を取り消して再入力する", disabled=bool(blocked))
             st.button("直前の結果を再入力", disabled=bool(blocked) or not undo, on_click=action, args=(core.reopen_last_result,))
 
-participants_tab, private_tab, records_tab, backup_tab, settings_tab = st.tabs(["🦑 参加者", "🎮 今回のプラベ", "📊 プレイヤーと試合記録", "💾 バックアップ", "⚙️ レート設定"])
+participants_tab, private_tab, records_tab, backup_tab, settings_tab, obs_tab = st.tabs([
+    "🦑 参加者", "🎮 今回のプラベ", "📊 プレイヤーと試合記録", "💾 バックアップ", "⚙️ レート設定", "👑 OBS配信表示",
+])
 
 with participants_tab:
     with st.expander("🧩 一括入力"):
@@ -464,6 +495,29 @@ with settings_tab:
     st.caption("例：レート2000・変動率3%なら、初回は±60、2連続なら±75。実際の計算は各試合直前のレートが基準です。小数は四捨五入、最低変動1（変動率0%は0）、レート範囲0〜999999。減少OFFでは負けてもレートは変わりません。")
     if locked:
         st.info("結果未入力の試合があります。設定は結果登録後に変更できます。")
+
+with obs_tab:
+    st.subheader("👑 最強プレイヤーの配信表示")
+    st.caption("チーム分けしたメンバーから、試合開始時の最高レートの人を表示します。結果登録や中止後は緑背景だけになります。")
+    if st.session_state.obs_enabled:
+        st.button("OBS連携を停止", on_click=set_obs_enabled, args=(False,))
+        app_url = (getattr(st.context, "url", None) or
+                   "https://team-balancer-app-97fuwx3goz5y3znabrw7ie.streamlit.app/")
+        st.caption("下のURLをOBSの「ブラウザ」ソースに貼り付け、幅960・高さ180に設定してください。")
+        st.code(f"{app_url}?embed=true&obs={st.session_state.obs_key}", language=None)
+        st.caption("Chromeでこの操作画面を開いたまま使用してください。クロマキーの色は緑（#00FF00）です。URLを知っている人は表示中の名前を見られます。")
+
+        @st.fragment(run_every=HEARTBEAT)
+        def obs_status():
+            name = strongest_player(core.pending_match(st.session_state.model))
+            if overlay_feeds().publish(st.session_state.obs_key, st.session_state.store_token, name):
+                st.text(f"表示中：👑 {name}" if name else "チーム分けを待っています。")
+            else:
+                st.info("このタブからの配信連携は停止しています。ここで再開するには、連携を停止してから開始してください。")
+
+        obs_status()
+    else:
+        st.button("OBS連携を開始", on_click=set_obs_enabled, args=(True,))
 
 st.divider()
 if (APP_DIR / "assets" / ("character_assigned.png" if locked else "character_start.png")).is_file():

@@ -2,6 +2,16 @@
 
 元の `team-balancer-app.py` をもとにした、Streamlit用の更新版です。
 
+## OBSに最強プレイヤーを表示する
+
+1. Chromeで公開アプリを開き、「👑 OBS配信表示」から「OBS連携を開始」を押します。
+2. 表示された専用URLをコピーし、OBSの「ブラウザ」ソースのURL欄に貼り付けます。幅 **960**、高さ **180** が目安です。
+3. ソースに「クロマキー」フィルタを追加し、色を緑（`#00FF00`）に設定します。
+
+配信中はChromeの操作画面を開いておいてください。試合のチーム分けが完了すると、参加者の中で試合開始時に最高レートだった人を表示します。同率の場合は名前の文字順で1人を選びます。結果登録・中止後は緑背景だけになります。
+
+OBS用のURLは、同じChromeプロファイルで開き直しても再利用できます。URLを知っている人には、連携中の表示名が見えます。「OBS連携を停止」を押すと表示が消えます。Chromeとの通信が途切れた場合は約2分半で表示が消えます。連携で配信表示へ送るのは選ばれた人の名前だけです。
+
 ## 2026-11-04：更新直後の起動エラー修正
 
 - 公開サーバーに更新前のPythonモジュールが残ると、更新後の画面から `current_private` を呼べず起動が止まる問題を修正しました。毎回、配信中の `balancer_core.py` を独立した名前空間で読み込みます。ほかの利用者の処理が参照しているモジュールを上書きしません。
@@ -54,6 +64,7 @@
 ```text
 team-balancer-app.py       ← 既存ファイルを更新
 balancer_core.py           ← 追加（試合・レート・保存データの処理）
+obs_overlay.py             ← OBS配信用の表示と連携
 theme.py                   ← 追加（元の配色・デザイン）
 browser_store/
   index.html               ← 追加（ブラウザ保存）
@@ -99,7 +110,7 @@ requirements.txt           ← 依存関係
 Python 3.10 / Streamlit 1.44.1 / pandas 2.2.3 で確認しました。
 
 ```text
-python -m unittest -v test_balancer test_privates test_app
+python -m unittest -v test_balancer test_privates test_app test_obs_overlay
 node test_browser_store.cjs
 ```
 

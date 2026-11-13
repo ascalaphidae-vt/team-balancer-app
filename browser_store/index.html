@@ -11,8 +11,10 @@ body{margin:0;font:13px/1.5 system-ui,sans-serif;color:#b9b4c4;background:transp
 <script>
 "use strict";
 const STORAGE_KEY = "splatoon-team-balancer:v2";
+const OBS_KEY = "splatoon-team-balancer:obs";
 const statusBox = document.getElementById("status");
 let token = null, expectedRaw = null, loaded = false, conflict = false, unavailable = false;
+let savedObs = null;
 function send(type, fields={}) {
   window.parent.postMessage({isStreamlitMessage:true,type,...fields}, "*");
 }
@@ -36,9 +38,12 @@ window.addEventListener("message", event => {
     loaded = false; conflict = false; unavailable = false;
     try {
       expectedRaw = window.localStorage.getItem(STORAGE_KEY);
+      savedObs = window.localStorage.getItem(OBS_KEY);
+      let obs = null;
+      try { obs = JSON.parse(savedObs); } catch { /* Ignore invalid optional settings. */ }
       loaded = true;
       report(expectedRaw ? "保存データを復元中…" : "このブラウザに自動保存します。");
-      send("streamlit:setComponentValue", {dataType:"json",value:{token,raw:expectedRaw,error:null}});
+      send("streamlit:setComponentValue", {dataType:"json",value:{token,raw:expectedRaw,obs,error:null}});
     } catch (error) {
       unavailable = true;
       report("ブラウザの保存領域が利用できません。保存の許可設定を確認してください。", true);
@@ -53,6 +58,13 @@ window.addEventListener("message", event => {
     if (args.payload !== expectedRaw) {
       window.localStorage.setItem(STORAGE_KEY, args.payload);
       expectedRaw = args.payload;
+    }
+    if (args.obs?.key) {
+      const nextObs = JSON.stringify(args.obs);
+      if (nextObs !== savedObs && window.localStorage.getItem(OBS_KEY) === savedObs) {
+        window.localStorage.setItem(OBS_KEY, nextObs);
+        savedObs = nextObs;
+      }
     }
     const stamp = JSON.parse(expectedRaw).updated_at;
     report("✓ このブラウザに保存済み · " + stamp.replace("T", " ").replace("+09:00", ""));
