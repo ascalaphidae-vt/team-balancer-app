@@ -3,6 +3,7 @@ from html import escape
 import re
 from threading import Lock
 from time import monotonic
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import streamlit as st
 
@@ -11,10 +12,19 @@ HEARTBEAT = 10
 # Chrome can reduce timer frequency to once a minute in a background tab.
 FEED_TIMEOUT = 150
 LINK_IDLE_LIMIT = 60 * 60
+PUBLIC_APP_URL = "https://team-balancer-app-97fuwx3goz5y3znabrw7ie.streamlit.app/"
 
 
 def valid_key(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{48}", value) is not None
+
+
+def browser_source_url(key, app_url=None):
+    url = urlsplit(app_url or PUBLIC_APP_URL)
+    # Community Cloud wraps the root in a branded shell even with embed enabled.
+    path = "/~/+/" if url.hostname and url.hostname.endswith(".streamlit.app") else url.path
+    query = urlencode({"embed": "true", "obs": key})
+    return urlunsplit((url.scheme, url.netloc, path, query, ""))
 
 
 def strongest_player(match):

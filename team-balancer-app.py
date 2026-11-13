@@ -10,20 +10,26 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from theme import apply_theme
-from obs_overlay import HEARTBEAT, overlay_feeds, show_overlay, strongest_player, valid_key
 
 APP_DIR = Path(__file__).resolve().parent
+
+
+def load_bundled_source(filename):
+    # Streamlit can keep Python modules from the previous release in memory.
+    source = APP_DIR / f"{filename}.py"
+    module = ModuleType(f"team_balancer_runtime_{filename}")
+    module.__file__ = str(source)
+    exec(compile(source.read_bytes(), str(source), "exec"), module.__dict__)
+    return module
+
+
+obs = load_bundled_source("obs_overlay")
 st.set_page_config(page_title="スプラ3オートバランス！", page_icon="🦑", layout="wide")
 if "obs" in st.query_params:
-    show_overlay(st.query_params["obs"])
+    obs.show_overlay(st.query_params["obs"])
     st.stop()
 
-# Streamlit can retain imported modules across deployments. Run the deployed source
-# in its own namespace so every render uses one complete, current set of functions.
-# This also avoids reloading a shared module while another user's callback uses it.
-core = ModuleType("team_balancer_runtime_core")
-core.__file__ = str(APP_DIR / "balancer_core.py")
-exec(compile(Path(core.__file__).read_bytes(), core.__file__, "exec"), core.__dict__)
+core = load_bundled_source("balancer_core")
 apply_theme()
 browser_store = components.declare_component("team_balancer_browser_store", path=str(APP_DIR / "browser_store"))
 
@@ -118,10 +124,10 @@ def set_obs_enabled(enabled):
     owner = st.session_state.store_token
     if enabled:
         key = key or token_hex(24)
-        overlay_feeds().start(key, owner, strongest_player(core.pending_match(st.session_state.model)))
+        obs.overlay_feeds().start(key, owner, obs.strongest_player(core.pending_match(st.session_state.model)))
         st.session_state.obs_key = key
     elif key:
-        overlay_feeds().stop(key, owner)
+        obs.overlay_feeds().stop(key, owner)
     st.session_state.obs_enabled = enabled
 
 
@@ -169,10 +175,10 @@ if not st.session_state.hydrated:
             st.stop()
         restored = core.new_state()
     st.session_state.model = restored
-    obs = reply.get("obs")
-    if isinstance(obs, dict) and valid_key(obs.get("key")):
-        st.session_state.obs_key = obs["key"]
-        if obs.get("enabled") is True:
+    saved_obs = reply.get("obs")
+    if isinstance(saved_obs, dict) and obs.valid_key(saved_obs.get("key")):
+        st.session_state.obs_key = saved_obs["key"]
+        if saved_obs.get("enabled") is True:
             set_obs_enabled(True)
     st.session_state.hydrated = True
     st.session_state.sync_inputs = True
@@ -501,16 +507,15 @@ with obs_tab:
     st.caption("チーム分けしたメンバーから、試合開始時の最高レートの人を表示します。結果登録や中止後は緑背景だけになります。")
     if st.session_state.obs_enabled:
         st.button("OBS連携を停止", on_click=set_obs_enabled, args=(False,))
-        app_url = (getattr(st.context, "url", None) or
-                   "https://team-balancer-app-97fuwx3goz5y3znabrw7ie.streamlit.app/")
+        app_url = getattr(st.context, "url", None)
         st.caption("下のURLをOBSの「ブラウザ」ソースに貼り付け、幅960・高さ180に設定してください。")
-        st.code(f"{app_url}?embed=true&obs={st.session_state.obs_key}", language=None)
+        st.code(obs.browser_source_url(st.session_state.obs_key, app_url), language=None)
         st.caption("Chromeでこの操作画面を開いたまま使用してください。クロマキーの色は緑（#00FF00）です。URLを知っている人は表示中の名前を見られます。")
 
-        @st.fragment(run_every=HEARTBEAT)
+        @st.fragment(run_every=obs.HEARTBEAT)
         def obs_status():
-            name = strongest_player(core.pending_match(st.session_state.model))
-            if overlay_feeds().publish(st.session_state.obs_key, st.session_state.store_token, name):
+            name = obs.strongest_player(core.pending_match(st.session_state.model))
+            if obs.overlay_feeds().publish(st.session_state.obs_key, st.session_state.store_token, name):
                 st.text(f"表示中：👑 {name}" if name else "チーム分けを待っています。")
             else:
                 st.info("このタブからの配信連携は停止しています。ここで再開するには、連携を停止してから開始してください。")

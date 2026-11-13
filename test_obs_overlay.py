@@ -32,6 +32,12 @@ class ObsTests(unittest.TestCase):
         self.assertIn("A&lt;&amp;", obs.overlay_markup("A<&"))
         self.assertNotIn("4000", obs.overlay_markup("A<&"))
 
+    def test_browser_source_omits_community_cloud_frame(self):
+        key = "f" * 48
+        self.assertIn(".streamlit.app/~/+/?embed=true&obs=" + key, obs.browser_source_url(key))
+        self.assertEqual(obs.browser_source_url(key, "http://localhost:8501/other/"),
+                         f"http://localhost:8501/other/?embed=true&obs={key}")
+
     def test_browser_source_updates_for_two_matches_and_hides_after_result_or_stop(self):
         state = core.new_state()
         core.apply_bulk(state, "\n".join(f"P{i}:{1000 + i * 100}" for i in range(8)) + "\n休憩:9999")
