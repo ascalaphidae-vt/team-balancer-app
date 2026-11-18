@@ -255,6 +255,67 @@ def apply_theme():
                 0 12px 28px rgba(0, 0, 0, 0.30),
                 0 0 18px rgba(255, 157, 202, 0.06);
         }
+
+        .team-members {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            background: var(--dark-panel);
+            overflow: hidden;
+        }
+
+        .team-members.team-a { border-top: 4px solid #b2ed8a; }
+        .team-members.team-b { border-top: 4px solid #ff9dca; }
+
+        .team-player {
+            padding: 12px 16px;
+        }
+
+        .team-player + .team-player {
+            border-top: 1px solid rgba(185, 180, 196, 0.16);
+        }
+
+        .team-player-heading {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .team-player-name {
+            min-width: 0;
+            color: var(--text-main);
+            font-size: 1.3rem;
+            font-weight: 700;
+            overflow-wrap: anywhere;
+        }
+
+        .team-player-rate {
+            color: var(--neon-cyan);
+            font-size: 1.15rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .team-player-rate small {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            font-weight: 400;
+        }
+
+        .team-player-stats {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            margin-top: 5px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .team-streak { color: var(--text-main); }
+        .team-streak.winning { color: #ffe09a; }
+        .team-streak.losing { color: #ff9dca; }
+        .team-lifetime { font-size: 0.8rem; }
     
         [data-testid="stNumberInput"] button {
             color: var(--neon-cyan);

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """スプラ3オートバランス！ ブラウザ保存対応版。"""
 from pathlib import Path
+from html import escape
 from secrets import token_hex
 from types import ModuleType
 import uuid
@@ -8,8 +9,6 @@ import uuid
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-
-from theme import apply_theme
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -30,7 +29,7 @@ if "obs" in st.query_params:
     st.stop()
 
 core = load_bundled_source("balancer_core")
-apply_theme()
+load_bundled_source("theme").apply_theme()
 browser_store = components.declare_component("team_balancer_browser_store", path=str(APP_DIR / "browser_store"))
 
 
@@ -38,9 +37,7 @@ def action(fn, *args):
     try:
         fn(st.session_state.model, *args)
         st.session_state.sync_inputs = True
-        if fn is core.create_match:
-            st.session_state.private_to_view = core.current_private(st.session_state.model)["id"]
-        message = "プラベを終了しました。今回のメンバー表と戦績を保存し、休憩回数を0に戻しました。" if fn is core.end_private else "保存しました。"
+        message = "プラベを終了しました。今回のメンバー表と戦績を保存し、休憩回数を0に戻して、次回の入力枠を空にしました。" if fn is core.end_private else "保存しました。"
         st.session_state.notice = ("success", message)
     except ValueError as error:
         st.session_state.notice = ("error", str(error))
@@ -105,7 +102,7 @@ def sync_inputs():
     for key in ("profile_to_load", "manage_player", "merge_source", "merge_target"):
         if st.session_state.get(key) not in model["profiles"]:
             st.session_state.pop(key, None)
-    if st.session_state.get("private_to_view") not in {p["id"] for p in model.get("private_sessions", [])}:
+    if st.session_state.get("private_to_view") not in {p["id"] for p in model.get("private_sessions", []) if p["ended_at"] is not None}:
         st.session_state.pop("private_to_view", None)
     for i, row in enumerate(model["roster"]):
         for prefix, field in (("name", "name"), ("rate", "rate"), ("part", "active")):
@@ -212,10 +209,11 @@ with st.container(border=True):
             st.caption(f"開始：{private['started_at'].replace('T', ' ')[:19]} · メンバー表は「🎮 今回のプラベ」に保存します。")
         else:
             st.write("🎮 プラベ開始前：最初のチーム分けで、新しいプラベが始まります。")
-            st.caption("終了した回のメンバー表・戦績は「🎮 今回のプラベ」で確認できます。休憩回数はプラベごとに数えます。")
+            st.caption("今回の参加者を入力・呼び出ししてください。終了した回の表は「🎮 今回のプラベ」の「終了したプラベ」で確認できます。")
     with private_end:
         st.button("🏁 プラベ終了", key="end_private", use_container_width=True,
-                  disabled=private is None or locked, on_click=action, args=(core.end_private,))
+                  disabled=private is None or locked, on_click=action, args=(core.end_private,),
+                  help="今回の表と戦績を保存し、休憩回数を0に戻して、次回の参加者入力枠を空にします。")
     if locked:
         st.caption("プラベを終了する前に、未入力の試合結果を登録するか、その試合を中止してください。")
 
@@ -228,14 +226,79 @@ def changes_table(changes):
     } for c in changes])
 
 
+def streak_text(streak):
+    return f"{abs(streak)}連{'勝' if streak > 0 else '敗'}" if streak else "—"
+
+
+def show_team_members(players, team):
+    cards = []
+    for player in players:
+        name = player["name"]
+        member = private["members"][name]
+        streak = member["streak"]
+        streak_class = "winning" if streak > 0 else "losing" if streak < 0 else ""
+        label = streak_text(streak) if member["matches"] else "今回の初戦"
+        delta = player["rate"] - member["initial_rate"]
+        lifetime = model["profiles"][name]["streak"]
+        continuation = (f'<span class="team-lifetime">通算 {streak_text(lifetime)}</span>'
+                        if lifetime != streak else "")
+        cards.append(
+            f'<div class="team-player">'
+            f'<div class="team-player-heading"><span class="team-player-name">{escape(name)}</span>'
+            f'<span class="team-player-rate">{player["rate"]:,}<small> 今回 {delta:+,}</small></span></div>'
+            f'<div class="team-player-stats"><span>今回 {member["wins"]}勝{member["losses"]}敗</span>'
+            f'<strong class="team-streak {streak_class}">{label}</strong>'
+            f'<span>休憩 {member["rests"]}回</span>{continuation}</div></div>'
+        )
+    st.html(f'<div class="team-members team-{team}">{"".join(cards)}</div>')
+
+
+def show_private_table(selected, table_key):
+    finished = selected["ended_at"] is not None
+    positions = {}
+    if not finished:
+        if match:
+            for field, label in (("team_a", "チームA"), ("team_b", "チームB")):
+                positions.update({p["name"]: label for p in match[field]})
+            positions.update({name: "休憩" for name in match["resting"]})
+        else:
+            positions = {p["name"].strip(): "次戦参加" if p["active"] else "休憩予定"
+                         for p in model["roster"] if p["name"].strip()}
+    rows = []
+    for p in selected["members"].values():
+        row = {"名前": p["name"]}
+        if not finished:
+            row["状態"] = positions.get(p["name"], "現在の枠外")
+        row.update({"終了時レート" if finished else "現在レート": p["rate"],
+                    "今回の増減": p["rate"] - p["initial_rate"],
+                    "勝ち": p["wins"], "負け": p["losses"],
+                    "今回の連勝・連敗": streak_text(p["streak"]), "休憩": p["rests"],
+                    "試合": p["matches"],
+                    "勝率": f"{100 * p['wins'] / p['matches']:.1f}%" if p["matches"] else "—",
+                    "開始時レート": p["initial_rate"]})
+        rows.append(row)
+    if rows:
+        if not finished:
+            order = {"チームA": 0, "チームB": 1, "次戦参加": 0, "休憩": 2, "休憩予定": 2, "現在の枠外": 3}
+            rows.sort(key=lambda row: order[row["状態"]])
+        session_frame = pd.DataFrame(rows)
+        st.dataframe(session_frame, key=table_key, hide_index=True, use_container_width=True,
+                     height=min(600, 38 + 35 * len(rows)))
+        session_csv = session_frame.copy()
+        session_csv["名前"] = session_csv["名前"].map(lambda x: "'" + x if x.startswith(("=", "+", "-", "@")) else x)
+        st.download_button("このプラベのメンバー表をCSVで保存" if finished else "今回のメンバー表をCSVで保存",
+                           session_csv.to_csv(index=False).encode("utf-8-sig"),
+                           f"team-balancer-private-{selected['number']}.csv", "text/csv", key=f"{table_key}_csv")
+
+
 if match:
     st.warning(f"第{match['number']}試合は結果未入力です。結果を登録すると次のチーム分けに進めます。")
+    st.caption("今回のプラベの戦績・連勝／連敗をチームごとに表示しています。レートはこの試合の開始時点です。")
     columns = st.columns(2)
     for col, label, field in zip(columns, ("🟩 チームA", "🟥 チームB"), ("team_a", "team_b")):
         with col:
             st.subheader(label)
-            st.dataframe(pd.DataFrame([{"名前": p["name"], "レート": p["rate"]} for p in match[field]]),
-                         use_container_width=True, hide_index=True)
+            show_team_members(match[field], field[-1])
             st.write(f"合計レート：{sum(p['rate'] for p in match[field]):,}")
     st.caption(f"合計レート差：{match['diff']:,} · 休憩：" + ("、".join(match["resting"]) or "なし"))
     if (len(match["team_a"]) + len(match["team_b"])) % 2:
@@ -324,36 +387,23 @@ with participants_tab:
                   on_click=action, args=(core.reset_roster,))
 
 with private_tab:
-    st.subheader("今回・終了したプラベのメンバー一覧")
-    st.caption("歴代の累計一覧とは別の、プラベごとの表です。途中参加や途中で枠から外れたメンバーも、その回で登録・チーム分けしていれば残ります。終了後の表はその時点の記録として保存します。")
-    sessions = model.get("private_sessions", [])
+    st.subheader("今回の参加者一覧")
+    if private:
+        st.write(f"第{private['number']}回プラベ · 進行中")
+        st.caption("連勝・連敗は今回のプラベ内で数えます。途中で入力枠から外れたメンバーは「現在の枠外」と表示します。")
+        show_private_table(private, "current_private_members_table")
+    else:
+        st.info("現在、進行中のプラベはありません。今回の参加者を入力して、最初のチーム分けをすると一覧ができます。")
+    sessions = [p for p in model.get("private_sessions", []) if p["ended_at"] is not None]
     if sessions:
-        by_id = {p["id"]: p for p in sessions}
-        selected_id = st.selectbox("表示するプラベ", list(reversed(by_id)), key="private_to_view",
-                                   format_func=lambda pid: f"第{by_id[pid]['number']}回 · {'進行中' if by_id[pid]['ended_at'] is None else '終了'} · {by_id[pid]['started_at'][:19].replace('T', ' ')}")
-        selected = by_id[selected_id]
-        finished = selected["ended_at"] is not None
-        if finished:
+        with st.expander("終了したプラベ"):
+            by_id = {p["id"]: p for p in sessions}
+            selected_id = st.selectbox("表示するプラベ", list(reversed(by_id)), key="private_to_view",
+                                      format_func=lambda pid: f"第{by_id[pid]['number']}回 · 終了 · {by_id[pid]['started_at'][:19].replace('T', ' ')}")
+            selected = by_id[selected_id]
             st.success(f"第{selected['number']}回プラベの終了時メンバー表")
             st.caption(f"終了：{selected['ended_at'].replace('T', ' ')[:19]} · 表の休憩はこの回の保存値です。現在の休憩カウンターは終了時に0へ戻しています。")
-        else:
-            st.info(f"第{selected['number']}回プラベは進行中です。結果登録ごとに更新します。")
-        session_rows = [{"名前": p["name"], "開始時レート": p["initial_rate"],
-                         "終了時レート" if finished else "現在レート": p["rate"],
-                         "今回の増減": p["rate"] - p["initial_rate"], "試合": p["matches"],
-                         "勝ち": p["wins"], "負け": p["losses"],
-                         "勝率": f"{100 * p['wins'] / p['matches']:.1f}%" if p["matches"] else "—",
-                         "休憩": p["rests"]} for p in selected["members"].values()]
-        if session_rows:
-            session_frame = pd.DataFrame(session_rows)
-            st.dataframe(session_frame, key="private_members_table", hide_index=True, use_container_width=True)
-            session_csv = session_frame.copy()
-            session_csv["名前"] = session_csv["名前"].map(lambda x: "'" + x if x.startswith(("=", "+", "-", "@")) else x)
-            st.download_button("このプラベのメンバー表をCSVで保存", session_csv.to_csv(index=False).encode("utf-8-sig"),
-                               f"team-balancer-private-{selected['number']}.csv", "text/csv")
-    else:
-        st.info("最初のチーム分けで、今回のプラベの記録を開始します。")
-        st.caption("この機能の導入前の試合は、歴代の戦績・試合履歴に引き続き残ります。開始・終了の区切りがないため、今回の表へはさかのぼって分類しません。")
+            show_private_table(selected, "finished_private_members_table")
 
 with records_tab:
     st.subheader("歴代のプレイヤー記録（累計戦績）")

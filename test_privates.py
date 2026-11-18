@@ -51,6 +51,8 @@ class PrivateTests(unittest.TestCase):
             self.assertEqual(p["rests"], 0)
             expected = dict(before_profiles[name], rests=0)
             self.assertEqual(p, expected)
+        self.assertEqual(s["roster"], c.empty_roster())
+        self.assertEqual(s["bulk_text"], "")
         ended = deepcopy(s)
         with self.assertRaises(ValueError): c.end_private(s)
         self.assertEqual(s, ended)
@@ -61,8 +63,12 @@ class PrivateTests(unittest.TestCase):
         result(s)
         c.end_private(s)
         completed = deepcopy(s["private_sessions"][0])
-        c.reset_roster(s)
-        c.apply_bulk(s, "あお:2060,新しい人:1800")
+        # No separate reset is needed after ending the previous private.
+        self.assertEqual(s["roster"], c.empty_roster())
+        # Filling only two slots used to leave the old resting player in slot 3.
+        s["roster"][0] = {"name": "あお", "rate": "2060", "active": True}
+        s["roster"][1] = {"name": "新しい人", "rate": "1800", "active": True}
+        c.commit_roster(s)
         self.assertIsNone(c.current_private(s))
         self.assertEqual(len(s["private_sessions"]), 1)
         m = result(s)
@@ -118,6 +124,7 @@ class PrivateTests(unittest.TestCase):
         ended = deepcopy(s)
         with self.assertRaises(ValueError): c.reopen_last_result(s)
         self.assertEqual(s, ended)
+        c.apply_bulk(s, "あお:2000,みどり:2000")
         result(s)
         c.reopen_last_result(s)
         self.assertEqual(s["private_sessions"][0], ended["private_sessions"][0])

@@ -234,13 +234,22 @@ class AppTests(unittest.TestCase):
         self.assertIsNone(c.current_private(state))
         self.assertEqual(state["profiles"]["休憩さん"]["rests"], 0)
         self.assertEqual(state["profiles"]["甲"]["matches"], 1)
+        self.assertEqual(at.text_input(key="name_0").value, "")
+        self.assertFalse(at.checkbox(key="part_0").value)
+        self.assertEqual(at.text_area(key="bulk_text").value, "")
+        self.assertFalse(any("現在レート" in df.value.columns and "状態" in df.value.columns for df in at.dataframe))
         table = next(df.value for df in at.dataframe if "終了時レート" in df.value.columns)
         self.assertEqual(table.loc[table["名前"] == "休憩さん", "休憩"].iloc[0], 1)
         self.assertTrue(self.button(at, "直前の結果を再入力").disabled)
+        at.text_area(key="bulk_text").set_value("新メンバー:2000,甲:2000").run()
+        self.button(at, "一括入力を反映").click().run()
         self.button(at, "✅ チームを分ける").click().run()
         self.assertFalse(at.exception)
         self.assertEqual(c.current_private(at.session_state.model)["number"], 2)
-        self.assertEqual(len(at.selectbox(key="private_to_view").options), 2)
+        self.assertEqual(len(at.selectbox(key="private_to_view").options), 1)
+        current = next(df.value for df in at.dataframe if "状態" in df.value.columns)
+        self.assertEqual(set(current["名前"]), {"新メンバー", "甲"})
+        self.assertIn("今回の連勝・連敗", current.columns)
 
     def test_private_view_restores_closed_tables_and_can_select_past_private(self):
         s = c.new_state()
@@ -248,6 +257,7 @@ class AppTests(unittest.TestCase):
         first = c.create_match(s)
         c.record_result(s, first["id"], "A")
         c.end_private(s)
+        c.apply_bulk(s, "甲:2000,新メンバー:1800")
         c.create_match(s)
         at = self.start(c.import_state(c.export_state(s)))
         self.assertFalse(at.exception)
@@ -256,6 +266,37 @@ class AppTests(unittest.TestCase):
         table = next(df.value for df in at.dataframe if "終了時レート" in df.value.columns)
         self.assertEqual(set(table["名前"]), {"甲", "乙"})
         self.assertEqual(table["試合"].sum(), 2)
+        # Browsing an archive never replaces the current member table.
+        current = next(df.value for df in at.dataframe if "状態" in df.value.columns)
+        self.assertEqual(set(current["名前"]), {"甲", "新メンバー"})
+
+    def test_match_teams_show_current_private_streaks_and_resting_members(self):
+        s = c.new_state()
+        c.apply_bulk(s, "\n".join(f"選手{i}:2000" for i in range(8)) + "\n休憩さん:2000")
+        s["roster"][8]["active"] = False
+        # A lifetime streak can carry in from a previous private.
+        s["profiles"]["選手0"].update(matches=4, wins=4, streak=4)
+        for _ in range(2):
+            m = c.create_match(s)
+            winner = "A" if any(p["name"] == "選手0" for p in m["team_a"]) else "B"
+            c.record_result(s, m["id"], winner)
+        m = c.create_match(s)
+        at = self.start(c.import_state(c.export_state(s)))
+        team_cards = [html.proto.body for html in at.get("html") if 'class="team-members' in html.proto.body]
+        self.assertEqual(len(team_cards), 2)
+        for cards, field in zip(team_cards, ("team_a", "team_b")):
+            self.assertEqual(cards.count('class="team-player"'), 4)
+            for p in m[field]:
+                self.assertIn(p["name"], cards)
+            self.assertNotIn("休憩さん", cards)
+        combined = "".join(team_cards)
+        self.assertIn("2連勝", combined)
+        self.assertIn("通算 6連勝", combined)
+        self.assertIn("今回 2勝0敗", combined)
+        current = next(df.value.set_index("名前") for df in at.dataframe if "状態" in df.value.columns)
+        self.assertEqual(current.loc["選手0", "今回の連勝・連敗"], "2連勝")
+        self.assertEqual(current.loc["休憩さん", "状態"], "休憩")
+        self.assertEqual(current.loc["休憩さん", "休憩"], 2)
 
 
 if __name__ == "__main__":

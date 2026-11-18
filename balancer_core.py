@@ -104,6 +104,8 @@ def end_private(state):
     private["ended_at"] = now()
     for p in state["profiles"].values():
         p["rests"] = 0
+    state["roster"] = empty_roster()
+    state["bulk_text"] = ""
     touch(state)
 
 
