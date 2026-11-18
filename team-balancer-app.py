@@ -54,6 +54,13 @@ def capture_roster():
     core.touch(st.session_state.model)
 
 
+def toggle_participation(slot):
+    if core.pending_match(st.session_state.model):
+        return
+    st.session_state[f"part_{slot}"] = not st.session_state.model["roster"][slot]["active"]
+    capture_roster()
+
+
 def capture_name(slot):
     model = st.session_state.model
     if core.pending_match(model):
@@ -84,6 +91,13 @@ def capture_team_fixing():
         else:
             row.pop("fixed_team", None)
     core.touch(model)
+
+
+def toggle_team_fixing():
+    if core.pending_match(st.session_state.model):
+        return
+    st.session_state.team_fixing_enabled = not st.session_state.model.get("team_fixing_enabled", False)
+    capture_team_fixing()
 
 
 def capture_bulk():
@@ -423,11 +437,19 @@ with participants_tab:
                 st.text(label)
                 st.text_input(f"レート{i + 1}", key=f"rate_{i}", max_chars=20,
                               disabled=locked, on_change=capture_roster)
-                st.checkbox(f"参加{i + 1}", key=f"part_{i}", disabled=locked, on_change=capture_roster)
+                active = model["roster"][i]["active"]
+                st.button("参加 ON" if active else "参加 OFF", key=f"part_toggle_{i}",
+                          type="primary" if active else "secondary", use_container_width=True,
+                          disabled=locked, on_click=toggle_participation, args=(i,))
     selected_count = sum(bool(r["name"].strip()) and r["active"] for r in model["roster"])
     st.write(f"参加 {selected_count}人 / 最大8人")
+    if locked:
+        st.caption("結果未入力の試合があります。参加とチーム固定は、結果登録または試合中止後に変更できます。")
     with st.expander("🔒 チーム固定"):
-        st.checkbox("チーム固定を使う", key="team_fixing_enabled", on_change=capture_team_fixing, disabled=locked)
+        fixing = model.get("team_fixing_enabled", False)
+        st.button("チーム固定 ON" if fixing else "チーム固定 OFF", key="toggle_team_fixing",
+                  type="primary" if fixing else "secondary", use_container_width=True,
+                  on_click=toggle_team_fixing, disabled=locked)
         st.caption("準備中は何度でもON/OFFや配置を変更できます。OFFでも選択は保持します。休憩者の固定はその試合では適用しません。")
         choices = {"": "おまかせ", "A": "チームAに固定", "B": "チームBに固定"}
         for i, row in enumerate(model["roster"]):

@@ -170,7 +170,7 @@ def apply_theme():
     
         .stButton > button,
         [data-testid="stFormSubmitButton"] > button {
-            min-height: 2.65rem;
+            min-height: 2.8rem;
             color: var(--text-main);
             font-weight: 700;
             letter-spacing: 0.035em;
@@ -191,8 +191,9 @@ def apply_theme():
                 box-shadow 150ms ease;
         }
     
-        .stButton > button:hover,
-        [data-testid="stFormSubmitButton"] > button:hover {
+        @media (hover: hover) and (pointer: fine) {
+        .stButton > button:enabled:hover,
+        [data-testid="stFormSubmitButton"] > button:enabled:hover {
             color: #07090c;
             border-color: var(--soft-pink);
             background: linear-gradient(
@@ -204,6 +205,7 @@ def apply_theme():
                 0 0 18px rgba(255, 157, 202, 0.28),
                 0 0 24px rgba(110, 231, 242, 0.20);
             transform: translateY(-1px);
+        }
         }
     
         .stButton > button[kind="primary"],
@@ -227,9 +229,38 @@ def apply_theme():
             filter: drop-shadow(0 0 5px rgba(216, 255, 143, 0.42));
         }
     
+        @media (hover: hover) and (pointer: fine) {
         [data-testid="stCheckbox"] label:hover,
         [data-testid="stRadio"] label:hover {
             color: var(--soft-pink);
+        }
+        }
+
+        .stButton > button,
+        [data-testid="stFormSubmitButton"] > button,
+        [data-testid="stCheckbox"] label,
+        [data-testid="stRadio"] label {
+            touch-action: manipulation;
+        }
+
+        @media (hover: none), (pointer: coarse) {
+            .stButton > button:enabled:hover,
+            [data-testid="stFormSubmitButton"] > button:enabled:hover {
+                color: var(--text-main);
+                border-color: rgba(110, 231, 242, 0.50);
+                background: linear-gradient(135deg, rgba(18, 25, 32, 0.98), rgba(24, 17, 29, 0.98));
+                transform: none;
+            }
+
+            .stButton > button[kind="primary"]:enabled:hover {
+                color: #050609;
+                background: linear-gradient(90deg, var(--soft-pink), var(--neon-cyan) 58%, var(--soft-lime));
+            }
+
+            [data-testid="stCheckbox"] label,
+            [data-testid="stRadio"] label {
+                min-height: 44px;
+            }
         }
     
         [data-testid="stAlert"] {

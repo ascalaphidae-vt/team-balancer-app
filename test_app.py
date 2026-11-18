@@ -115,7 +115,7 @@ class AppTests(unittest.TestCase):
         for i, name in enumerate(("あすふぃだ", "イシガケ", "休憩さん")):
             at.text_input(key=f"name_{i}").set_value(name).run()
             at.text_input(key=f"rate_{i}").set_value("２０００").run()
-            if i < 2: at.checkbox(key=f"part_{i}").check().run()
+            if i < 2: at.button(key=f"part_toggle_{i}").click().run()
         self.button(at, "✅ チームを分ける").click().run()
         self.assertEqual(len(at.exception), 0)
         m = c.pending_match(at.session_state.model)
@@ -235,7 +235,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(state["profiles"]["休憩さん"]["rests"], 0)
         self.assertEqual(state["profiles"]["甲"]["matches"], 1)
         self.assertEqual(at.text_input(key="name_0").value, "")
-        self.assertFalse(at.checkbox(key="part_0").value)
+        self.assertEqual(at.button(key="part_toggle_0").label, "参加 OFF")
         self.assertEqual(at.text_area(key="bulk_text").value, "")
         self.assertFalse(any("現在レート" in df.value.columns and "状態" in df.value.columns for df in at.dataframe))
         table = next(df.value for df in at.dataframe if "終了時レート" in df.value.columns)
