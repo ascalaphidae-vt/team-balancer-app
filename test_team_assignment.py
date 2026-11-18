@@ -168,7 +168,7 @@ class AssignmentAppTests(unittest.TestCase):
         second = core.pending_match(at.session_state.model)
         self.assertEqual(second["fixed_teams"], {"P0": "A", "P1": "A"})
         self.assertTrue({"P0", "P1"} <= {p["name"] for p in second["team_a"]})
-        at.checkbox(key=f"cancel_{second['id']}").check().run()
+        at.radio(key=f"cancel_{second['id']}").set_value(True).run()
         self.press(at, "試合を中止")
         self.press(at, "固定をすべて解除")
         self.assertEqual(at.button(key="toggle_team_fixing").label, "チーム固定 OFF")

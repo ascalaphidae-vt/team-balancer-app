@@ -33,6 +33,11 @@ load_bundled_source("theme").apply_theme()
 browser_store = components.declare_component("team_balancer_browser_store", path=str(APP_DIR / "browser_store"))
 
 
+def confirm_action(label, *, key, disabled=False):
+    return st.radio(label, [False, True], key=key, horizontal=True, disabled=disabled,
+                    format_func=lambda confirmed: "はい" if confirmed else "いいえ")
+
+
 def action(fn, *args):
     try:
         fn(st.session_state.model, *args)
@@ -223,7 +228,7 @@ if not st.session_state.hydrated:
         st.error(str(error))
         if raw:
             st.download_button("読み込めなかった保存データを退避", raw, "team-balancer-recovery.txt")
-        agree = st.checkbox("保存されていたデータを退避済み、または新規で開始してよい")
+        agree = confirm_action("保存されていたデータを退避済み、または新規で開始してよい", key="recovery_agree")
         if not st.button("一時利用を開始" if reply.get("error") else "新しいデータで開始", disabled=not agree):
             st.stop()
         restored = core.new_state()
@@ -237,6 +242,9 @@ if not st.session_state.hydrated:
     st.session_state.sync_inputs = True
     st.rerun()
 
+if st.session_state.get("radio_controls_version") != 1:
+    st.session_state.radio_controls_version = 1
+    st.session_state.sync_inputs = True
 sync_inputs()
 model = st.session_state.model
 match = core.pending_match(model)
@@ -353,15 +361,17 @@ if match:
     if match_view == "メンバーの戦績":
         st.caption("勝敗・休憩は今回分、連勝・連敗は前回のプラベから続く通算値です。")
     columns = st.columns(2)
-    for col, label, field in zip(columns, ("🟩 チームA", "🟥 チームB"), ("team_a", "team_b")):
+    for col, field in zip(columns, ("team_a", "team_b")):
         with col:
-            st.subheader(label)
-            if match_view == "メンバーの戦績":
-                show_team_members(match[field], field[-1])
-            else:
-                st.dataframe(pd.DataFrame([{"名前": p["name"], "レート": p["rate"]} for p in match[field]]),
-                             use_container_width=True, hide_index=True)
-            st.write(f"合計レート：{sum(p['rate'] for p in match[field]):,}")
+            with st.container(key=f"{field}_panel"):
+                side = field[-1]
+                st.html(f'<h3 class="team-heading team-{side}">チーム{side.upper()}</h3>')
+                if match_view == "メンバーの戦績":
+                    show_team_members(match[field], side)
+                else:
+                    st.dataframe(pd.DataFrame([{"名前": p["name"], "レート": p["rate"]} for p in match[field]]),
+                                 use_container_width=True, hide_index=True)
+                st.write(f"合計レート：{sum(p['rate'] for p in match[field]):,}")
     st.caption(f"合計レート差：{match['diff']:,} · 休憩：" + ("、".join(match["resting"]) or "なし"))
     if match.get("fixed_teams"):
         st.caption("この試合の固定：" + " / ".join(f"{name} → {side}" for name, side in match["fixed_teams"].items()))
@@ -370,9 +380,10 @@ if match:
     settings = match["settings"]
     st.caption(f"この試合の設定：変動率 {settings['percent']:g}% / 敗北時の減少 {'ON' if settings['decrease'] else 'OFF'} / 連勝・連敗補正 {'ON' if settings['streak_bonus'] else 'OFF'}")
     st.caption(f"新規プレイヤーの通算1〜4試合目：変動量 ×{settings.get('new_player_multiplier', 1):g}")
-    winner = st.radio("勝利チームを選んでください", ["A", "B"], index=None,
-                      key=f"winner_{match['id']}", horizontal=True,
-                      on_change=capture_winner, args=(match["id"],))
+    with st.container(key="winner_selection"):
+        winner = st.radio("勝利チームを選んでください", ["A", "B"], index=None,
+                          key=f"winner_{match['id']}", horizontal=True,
+                          on_change=capture_winner, args=(match["id"],))
     if winner:
         st.dataframe(changes_table(core.preview_result(model, match, winner)),
                      hide_index=True, use_container_width=True)
@@ -380,7 +391,7 @@ if match:
               on_click=action, args=(core.record_result, match["id"], winner), use_container_width=True)
     with st.expander("この試合を中止する・チーム分けをやり直す"):
         st.caption("中止した試合は勝敗・レート・休憩回数に加算しません。中止の履歴は残ります。")
-        confirmed = st.checkbox("この試合を記録せずに中止する", key=f"cancel_{match['id']}")
+        confirmed = confirm_action("この試合を記録せずに中止する", key=f"cancel_{match['id']}")
         st.button("試合を中止", disabled=not confirmed, on_click=action, args=(core.cancel_match, match["id"]))
 else:
     last = next((m for m in reversed(model["history"]) if m["status"] == "recorded"), None)
@@ -392,7 +403,7 @@ else:
             blocked = core.result_reopen_reason(model, last)
             if blocked:
                 st.info(blocked)
-            undo = st.checkbox("直前の結果を取り消して再入力する", disabled=bool(blocked))
+            undo = confirm_action("直前の結果を取り消して再入力する", key=f"reopen_{last['id']}", disabled=bool(blocked))
             st.button("直前の結果を再入力", disabled=bool(blocked) or not undo, on_click=action, args=(core.reopen_last_result,))
 
 participants_tab, private_tab, records_tab, backup_tab, settings_tab, obs_tab = st.tabs([
@@ -466,7 +477,7 @@ with participants_tab:
                  args=(core.create_match,), disabled=locked, use_container_width=True)
     with st.expander("参加者の入力枠を空にする"):
         st.caption("プレイヤーの初期・最新レート、勝敗、試合履歴は残ります。")
-        clear = st.checkbox("10枠の名前・レート・参加設定を空にする", disabled=locked)
+        clear = confirm_action("10枠の名前・レート・参加設定を空にする", key="clear_roster_confirmation", disabled=locked)
         st.button("入力枠を空にする", disabled=locked or not clear,
                   on_click=action, args=(core.reset_roster,))
 
@@ -558,14 +569,14 @@ with records_tab:
                                           ("統合後の最新レート", rate_key, "rate")):
                     st.radio(label, ["target", "source"], horizontal=True, key=key, disabled=locked,
                              format_func=lambda side, f=field: f"{target if side == 'target' else source}：{(b if side == 'target' else a)[f]}")
-                agreed = st.checkbox("この2つの名前は同じ人物です", key=merge_prefix + "_confirm", disabled=locked)
+                agreed = confirm_action("この2つの名前は同じ人物です", key=merge_prefix + "_confirm", disabled=locked)
                 st.button("この2人の記録を統合", disabled=locked or not agreed,
                           on_click=merge_profile_selection, args=(source, target, initial_key, rate_key))
 
         with st.expander("🗑️ 不要なプレイヤーを削除する"):
             st.caption("プレイヤー記録・呼び出し一覧・現在の参加者枠から外します。過去の試合履歴は残ります。")
-            agreed = st.checkbox(f"「{person}」をプレイヤー記録から削除する",
-                                 key=f"delete_{person}_{model['revision']}", disabled=locked)
+            agreed = confirm_action(f"「{person}」をプレイヤー記録から削除する",
+                                    key=f"delete_{person}_{model['revision']}", disabled=locked)
             st.button("選んだプレイヤーを削除", disabled=locked or not agreed,
                       on_click=action, args=(core.delete_profile, person))
 
@@ -593,7 +604,7 @@ with backup_tab:
     st.download_button("📥 全データのバックアップ", core.export_state(model).encode("utf-8"),
                        "team-balancer-backup.json", "application/json", use_container_width=True)
     uploaded = st.file_uploader("JSONバックアップから復元", type=["json"], disabled=locked)
-    replace = st.checkbox("バックアップの内容で現在の入力・全記録を置き換える", disabled=locked)
+    replace = confirm_action("バックアップの内容で現在の入力・全記録を置き換える", key="replace_backup_confirmation", disabled=locked)
     if st.button("バックアップを復元", disabled=locked or uploaded is None or not replace):
         try:
             restored = core.import_state(uploaded.getvalue().decode("utf-8-sig"))
@@ -631,10 +642,14 @@ with settings_tab:
                     key="match_tolerance", on_change=capture_settings, disabled=locked)
     st.caption("標準25。最小レート差にこの値を足した範囲で、直前の試合と同じ味方の組み合わせを減らします。0は最小差の候補だけを使います。チーム固定中は、固定を守れる編成の最小差を基準にします。")
     st.subheader("レート変動の設定")
-    st.checkbox("負けたときにレートを減らす（標準ON）", key="decrease", on_change=capture_settings, disabled=locked)
+    st.radio("負けたときにレートを減らす（標準ON）", [False, True], horizontal=True,
+             format_func=lambda enabled: "ON" if enabled else "OFF",
+             key="decrease", on_change=capture_settings, disabled=locked)
     st.number_input("基本変動率（%）", min_value=0.0, max_value=20.0, step=0.5,
                     key="percent", on_change=capture_settings, disabled=locked)
-    st.checkbox("連勝・連敗で変動を大きくする", key="streak_bonus", on_change=capture_settings, disabled=locked)
+    st.radio("連勝・連敗で変動を大きくする", [False, True], horizontal=True,
+             format_func=lambda enabled: "ON" if enabled else "OFF",
+             key="streak_bonus", on_change=capture_settings, disabled=locked)
     st.markdown("連勝・連敗の **1回目は1倍、2回目は1.25倍、3回目は1.5倍、4回目は2倍、5回目以降は3倍**。勝敗が変わると1回目から数え直します。休憩は連勝・連敗を中断しません。")
     st.caption("例：レート2000・変動率3%なら、初回は±60、2連続なら±75。実際の計算は各試合直前のレートが基準です。小数は四捨五入、最低変動1（変動率0%は0）、レート範囲0〜999999。減少OFFでは負けてもレートは変わりません。")
     st.number_input("新規プレイヤーの補正倍率（通算1〜4試合目）", min_value=1.0, max_value=5.0, step=0.5,
