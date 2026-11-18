@@ -112,7 +112,8 @@ class MatchTests(unittest.TestCase):
 
     def test_rating_modes_streak_reset_cap_and_floor(self):
         settings = dict(c.DEFAULT_SETTINGS)
-        self.assertEqual([c.calculate_change(2000, True, i, settings) for i in range(1, 7)], [60, 75, 90, 105, 120, 120])
+        self.assertEqual([c.calculate_change(2000, True, i, settings) for i in range(1, 7)], [60, 75, 90, 120, 180, 180])
+        self.assertEqual([c.calculate_change(2000, False, -i, settings) for i in range(1, 7)], [-60, -75, -90, -120, -180, -180])
         self.assertEqual(c.calculate_change(2000, False, -3, settings), -90)
         self.assertEqual(c.next_streak(-5, True), 1)
         self.assertEqual(c.next_streak(5, False), -1)
@@ -145,7 +146,9 @@ class MatchTests(unittest.TestCase):
                          [120, 120, 120, 120, 60, 60])
         self.assertEqual(c.calculate_change(2000, False, -3, settings, 0), -180)
         self.assertEqual(c.calculate_change(2000, True, 3, settings, 0), 180)
-        self.assertEqual(c.calculate_change(20, False, -5, settings, 0), -2)
+        self.assertEqual(c.calculate_change(20, False, -5, settings, 0), -4)
+        self.assertEqual(c.calculate_change(2000, True, 4, settings, 3), 240)
+        self.assertEqual(c.calculate_change(2000, True, 4, settings, 4), 120)
         self.assertEqual(c.calculate_change(c.MAX_RATE, True, 5, settings, 0), 0)
         settings["decrease"] = False
         self.assertEqual(c.calculate_change(2000, False, -3, settings, 0), 0)
@@ -189,9 +192,11 @@ class MatchTests(unittest.TestCase):
         s["settings"].pop("new_player_multiplier")
         c.apply_bulk(s, "甲:2000,乙:2000")
         first = c.create_match(s)
+        first["settings"].pop("streak_version")
         c.record_result(s, first["id"], "A")
         old_changes = deepcopy(first["changes"])
         pending = c.create_match(s)
+        pending["settings"].pop("streak_version")
         old_preview = c.preview_result(s, pending, "B")
         restored = c.import_state(c.export_state(s))
         self.assertEqual(restored["history"][0]["changes"], old_changes)
@@ -207,6 +212,31 @@ class MatchTests(unittest.TestCase):
             state["settings"]["new_player_multiplier"] = value
             with self.assertRaises(ValueError):
                 c.import_state(json.dumps(state))
+
+    def test_old_streak_snapshots_restore_and_new_assignments_use_new_schedule(self):
+        s = c.new_state()
+        c.apply_bulk(s, "甲:2000,乙:2000")
+        for name in ("甲", "乙"):
+            s["profiles"][name].update(matches=3, wins=3, streak=3)
+        first = c.create_match(s)
+        first["settings"].pop("streak_version")
+        expected = c.preview_result(s, first, "A")
+        winner = first["team_a"][0]["name"]
+        self.assertEqual(next(row["delta"] for row in expected if row["name"] == winner), 210)
+        c.record_result(s, first["id"], "A")
+        restored = c.import_state(c.export_state(s))
+        self.assertEqual(restored["history"][0]["changes"], expected)
+        c.reopen_last_result(restored)
+        self.assertEqual(c.preview_result(restored, c.pending_match(restored), "A"), expected)
+        c.record_result(restored, first["id"], "A")
+        new_match = c.create_match(restored)
+        self.assertEqual(new_match["settings"]["streak_version"], 2)
+        new_winner = "A" if new_match["team_a"][0]["name"] == winner else "B"
+        change = next(row for row in c.preview_result(restored, new_match, new_winner) if row["name"] == winner)
+        self.assertEqual(change["streak"], 5)
+        self.assertEqual(change["delta"], c.calculate_change(change["before"], True, 5, s["settings"], 4))
+        c.record_result(restored, new_match["id"], new_winner)
+        self.assertEqual(c.import_state(c.export_state(restored)), restored)
 
     def test_corrupt_backup_does_not_load(self):
         s = populated()

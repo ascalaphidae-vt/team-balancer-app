@@ -559,7 +559,7 @@ with settings_tab:
     st.number_input("基本変動率（%）", min_value=0.0, max_value=20.0, step=0.5,
                     key="percent", on_change=capture_settings, disabled=locked)
     st.checkbox("連勝・連敗で変動を大きくする", key="streak_bonus", on_change=capture_settings, disabled=locked)
-    st.markdown("連勝・連敗の **1回目は1倍、2回目は1.25倍、3回目は1.5倍、4回目は1.75倍、5回目以降は2倍**。勝敗が変わると1回目から数え直します。休憩は連勝・連敗を中断しません。")
+    st.markdown("連勝・連敗の **1回目は1倍、2回目は1.25倍、3回目は1.5倍、4回目は2倍、5回目以降は3倍**。勝敗が変わると1回目から数え直します。休憩は連勝・連敗を中断しません。")
     st.caption("例：レート2000・変動率3%なら、初回は±60、2連続なら±75。実際の計算は各試合直前のレートが基準です。小数は四捨五入、最低変動1（変動率0%は0）、レート範囲0〜999999。減少OFFでは負けてもレートは変わりません。")
     st.number_input("新規プレイヤーの補正倍率（通算1〜4試合目）", min_value=1.0, max_value=5.0, step=0.5,
                     key="new_player_multiplier", on_change=capture_settings, disabled=locked)

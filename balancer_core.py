@@ -13,6 +13,7 @@ VERSION = 2
 MAX_RATE = 999999
 MAX_BACKUP_BYTES = 4_000_000
 DEFAULT_SETTINGS = {"decrease": True, "percent": 3.0, "streak_bonus": True, "new_player_multiplier": 2.0}
+STREAK_FACTORS = ("1", "1.25", "1.5", "2", "3")
 
 
 def now():
@@ -239,7 +240,7 @@ def create_match(state):
              "created_at": now(), "status": "pending", "winner": None,
              "team_a": a, "team_b": b,
              "resting": [p["name"] for p in rows if not p["active"]],
-             "settings": deepcopy(state["settings"]), "diff": diff, "changes": []}
+             "settings": dict(deepcopy(state["settings"]), streak_version=2), "diff": diff, "changes": []}
     state["history"].append(match)
     touch(state)
     return match
@@ -250,7 +251,10 @@ def next_streak(previous, won):
 
 
 def calculate_change(rate, won, streak, settings, matches_before=None):
-    factor = min(Decimal("2"), Decimal("1") + Decimal("0.25") * (abs(streak) - 1))
+    if settings.get("streak_version", 2) == 1:
+        factor = min(Decimal("2"), Decimal("1") + Decimal("0.25") * (abs(streak) - 1))
+    else:
+        factor = Decimal(STREAK_FACTORS[min(max(abs(streak) - 1, 0), 4)])
     if not settings["streak_bonus"]:
         factor = Decimal("1")
     if matches_before is not None and matches_before < 4:
@@ -268,13 +272,15 @@ def preview_result(state, match, winner):
     if winner not in ("A", "B"):
         raise ValueError("勝利チームを選んでください。")
     winning = {p["name"] for p in match["team_a" if winner == "A" else "team_b"]}
+    settings = dict(match["settings"])
+    settings.setdefault("streak_version", 1)  # Preserve results made before the rule change.
     changes = []
     for p in match["team_a"] + match["team_b"]:
         name, rate = p["name"], p["rate"]
         won = name in winning
         streak = next_streak(state["profiles"][name]["streak"], won)
         matches_before = state["profiles"][name]["matches"]
-        delta = calculate_change(rate, won, streak, match["settings"], matches_before)
+        delta = calculate_change(rate, won, streak, settings, matches_before)
         change = {"name": name, "before": rate, "after": rate + delta,
                   "delta": delta, "won": won, "streak": streak}
         # Keep old result snapshots byte-for-byte compatible with their settings.
@@ -530,6 +536,9 @@ def _validate_settings(s):
     multiplier = s.get("new_player_multiplier", 1.0)
     if type(multiplier) not in (int, float) or not 1 <= multiplier <= 5:
         raise ValueError("新規プレイヤーの補正倍率は1〜5倍にしてください。")
+    version = s.get("streak_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("連勝・連敗補正の保存形式が不正です。")
 
 
 def _validate_privates(state, legacy):
