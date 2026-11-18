@@ -15,8 +15,8 @@ def apply_theme():
             --text-main: #f5f3f7;
             --text-muted: #b1afba;
             --line: #34373f;
-            --control-accent: var(--soft-lime);
-            --control-tint: #182018;
+            --control-accent: var(--neon-cyan);
+            --control-tint: #102127;
         }
 
         html, body, [class*="css"] {
@@ -26,7 +26,7 @@ def apply_theme():
         [data-testid="stHeader"] { background: rgba(7, 9, 12, 0.96); }
         [data-testid="stMainBlockContainer"] { max-width: 1540px; padding-top: 4.5rem; }
         h1, h2, h3 { color: var(--text-main); letter-spacing: 0.025em; }
-        h2, h3 { border-left: 3px solid var(--soft-lime); padding-left: 0.7rem; }
+        h2, h3 { border-left: 3px solid var(--soft-pink); padding-left: 0.7rem; }
         a { color: var(--soft-lime) !important; text-decoration-color: rgba(199, 238, 133, 0.5) !important; }
         hr { border-color: var(--line) !important; }
         [data-testid="stCaptionContainer"], [data-testid="stMarkdownContainer"] small { color: var(--text-muted); }
@@ -65,7 +65,7 @@ def apply_theme():
             min-height: 2.8rem;
             color: var(--text-main);
             font-weight: 700;
-            border: 1px solid #51564d;
+            border: 1px solid #3b4c51;
             border-radius: 8px;
             background: var(--dark-panel-2);
             box-shadow: none;
@@ -73,14 +73,14 @@ def apply_theme():
         }
         .stButton > button[kind="primary"],
         [data-testid="stFormSubmitButton"] > button[kind="primary"] {
-            color: var(--soft-lime);
-            border-color: var(--soft-lime);
-            background: #182018;
+            color: var(--neon-cyan);
+            border-color: var(--neon-cyan);
+            background: #102127;
         }
         .stButton > button:focus-visible,
         [data-testid="stFormSubmitButton"] > button:focus-visible,
         [data-testid="stDownloadButton"] > button:focus-visible {
-            outline: 2px solid var(--soft-lime);
+            outline: 2px solid var(--neon-cyan);
             outline-offset: 3px;
         }
         .stButton > button:disabled,
@@ -110,8 +110,8 @@ def apply_theme():
         }
         [data-testid="stRadio"] [data-baseweb="radio"]:has(input:disabled) { opacity: 0.5; }
         [data-testid="stRadio"] input { accent-color: var(--control-accent); }
-        [data-testid="stTabs"] button[aria-selected="true"] { color: var(--soft-lime); }
-        [data-testid="stTabs"] [data-baseweb="tab-highlight"] { background-color: var(--soft-lime); }
+        [data-testid="stTabs"] button[aria-selected="true"] { color: var(--neon-cyan); }
+        [data-testid="stTabs"] [data-baseweb="tab-highlight"] { background-color: var(--neon-cyan); }
 
         [data-testid="stAlert"] {
             color: var(--text-main);
@@ -187,7 +187,7 @@ def apply_theme():
             --control-tint: #251820;
         }
 
-        [data-testid="stNumberInput"] button { color: var(--soft-lime); background: var(--dark-panel-2); }
+        [data-testid="stNumberInput"] button { color: var(--neon-cyan); background: var(--dark-panel-2); }
         code {
             color: var(--soft-lime) !important;
             background: #141a13 !important;
@@ -200,9 +200,9 @@ def apply_theme():
             .stButton > button:enabled:hover,
             [data-testid="stFormSubmitButton"] > button:enabled:hover,
             [data-testid="stDownloadButton"] > button:enabled:hover {
-                color: var(--soft-lime);
-                border-color: var(--soft-lime);
-                background: #20271d;
+                color: var(--neon-cyan);
+                border-color: var(--neon-cyan);
+                background: #16282e;
             }
         }
         @media (hover: none), (pointer: coarse) {
@@ -210,14 +210,14 @@ def apply_theme():
             [data-testid="stFormSubmitButton"] > button:enabled:hover,
             [data-testid="stDownloadButton"] > button:enabled:hover {
                 color: var(--text-main);
-                border-color: #51564d;
+                border-color: #3b4c51;
                 background: var(--dark-panel-2);
             }
             .stButton > button[kind="primary"]:enabled:hover,
             [data-testid="stFormSubmitButton"] > button[kind="primary"]:enabled:hover {
-                color: var(--soft-lime);
-                border-color: var(--soft-lime);
-                background: #182018;
+                color: var(--neon-cyan);
+                border-color: var(--neon-cyan);
+                background: #102127;
             }
         }
         @media (max-width: 700px) {
