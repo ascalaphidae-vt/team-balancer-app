@@ -12,7 +12,8 @@ import uuid
 VERSION = 2
 MAX_RATE = 999999
 MAX_BACKUP_BYTES = 4_000_000
-DEFAULT_SETTINGS = {"decrease": True, "percent": 3.0, "streak_bonus": True, "new_player_multiplier": 2.0}
+DEFAULT_SETTINGS = {"decrease": True, "percent": 3.0, "streak_bonus": True,
+                    "new_player_multiplier": 2.0, "match_tolerance": 25}
 STREAK_FACTORS = ("1", "1.25", "1.5", "2", "3")
 
 
@@ -27,7 +28,8 @@ def empty_roster():
 def new_state():
     return {"version": VERSION, "revision": 0, "updated_at": now(),
             "roster": empty_roster(), "profiles": {}, "history": [],
-            "settings": deepcopy(DEFAULT_SETTINGS), "bulk_text": "", "private_sessions": []}
+            "settings": deepcopy(DEFAULT_SETTINGS), "bulk_text": "", "private_sessions": [],
+            "team_fixing_enabled": False}
 
 
 def touch(state):
@@ -121,6 +123,7 @@ def end_private(state):
         p["rests"] = 0
     state["roster"] = empty_roster()
     state["bulk_text"] = ""
+    state["team_fixing_enabled"] = False
     touch(state)
 
 
@@ -205,23 +208,43 @@ def load_profile(state, name, use_initial=False):
     touch(state)
 
 
-def assign_teams(players):
-    """最小の合計レート差。同じ差の候補はランダムで選ぶ。"""
-    n, best, candidates = len(players), float("inf"), []
-    for indexes in itertools.combinations(range(n), n // 2):
-        if n % 2 == 0 and 0 not in indexes:
-            continue  # Mirrored teams are equivalent.
-        a = [players[i] for i in indexes]
-        b = [players[i] for i in range(n) if i not in indexes]
-        diff = abs(sum(p["rate"] for p in a) - sum(p["rate"] for p in b))
-        if diff < best:
-            best, candidates = diff, [(a, b)]
-        elif diff == best:
-            candidates.append((a, b))
+def assign_teams(players, tolerance=0, previous_match=None, fixed_teams=None):
+    """Respect fixed sides, then reduce repeated teammate pairs within the gap budget."""
+    fixed_teams = fixed_teams or {}
+    names = {p["name"] for p in players}
+    if not set(fixed_teams) <= names or any(side not in ("A", "B") for side in fixed_teams.values()):
+        raise ValueError("チーム固定は、対戦に参加する人のA・Bを指定してください。")
+    _integer(tolerance, high=4 * MAX_RATE)
+    previous_pairs = set()
+    if previous_match:
+        for field in ("team_a", "team_b"):
+            previous_pairs.update(frozenset((a["name"], b["name"]))
+                                  for a, b in itertools.combinations(previous_match[field], 2))
+    n = len(players)
+    sizes = sorted({n // 2, n - n // 2}) if fixed_teams else [n // 2]
+    candidates = []
+    for size in sizes:
+        for indexes in itertools.combinations(range(n), size):
+            if not fixed_teams and n % 2 == 0 and 0 not in indexes:
+                continue  # Mirror elimination is valid only when A/B are interchangeable.
+            a = [players[i] for i in indexes]
+            a_names = {p["name"] for p in a}
+            if any((name in a_names) != (side == "A") for name, side in fixed_teams.items()):
+                continue
+            b = [players[i] for i in range(n) if i not in indexes]
+            if not a or not b:
+                continue
+            diff = abs(sum(p["rate"] for p in a) - sum(p["rate"] for p in b))
+            overlap = sum(frozenset((x["name"], y["name"])) in previous_pairs
+                          for team in (a, b) for x, y in itertools.combinations(team, 2))
+            candidates.append((overlap, diff, a, b))
     if not candidates:
-        raise ValueError("参加者を2人以上選んでください。")
-    a, b = random.choice(candidates)
-    return deepcopy(a), deepcopy(b), best
+        raise ValueError("チーム固定の人数を確認してください。両チームの人数差が1人以内になるように配置できません。")
+    best_diff = min(c[1] for c in candidates)
+    eligible = [c for c in candidates if c[1] <= best_diff + tolerance]
+    best_score = min((c[0], c[1]) for c in eligible)
+    _, diff, a, b = random.choice([c for c in eligible if (c[0], c[1]) == best_score])
+    return deepcopy(a), deepcopy(b), diff
 
 
 def create_match(state):
@@ -230,7 +253,14 @@ def create_match(state):
     playing = [p for p in rows if p["active"]]
     if not 2 <= len(playing) <= 8:
         raise ValueError("参加者は2〜8人にしてください。残りの人は参加をOFFにすると休憩になります。")
-    a, b, diff = assign_teams(playing)
+    fixed_teams = {}
+    if state.get("team_fixing_enabled", False):
+        fixed_teams = {p["name"]: state["roster"][p["slot"]]["fixed_team"] for p in playing
+                       if state["roster"][p["slot"]].get("fixed_team")}
+    private = current_private(state)
+    previous = next((m for m in reversed(state["history"]) if m["status"] == "recorded"
+                     and private and m.get("private_id") == private["id"]), None)
+    a, b, diff = assign_teams(playing, state["settings"].get("match_tolerance", 25), previous, fixed_teams)
     commit_roster(state)
     private = current_private(state)
     if private is None:
@@ -240,7 +270,11 @@ def create_match(state):
              "created_at": now(), "status": "pending", "winner": None,
              "team_a": a, "team_b": b,
              "resting": [p["name"] for p in rows if not p["active"]],
-             "settings": dict(deepcopy(state["settings"]), streak_version=2), "diff": diff, "changes": []}
+             "settings": dict(deepcopy(state["settings"]), streak_version=2,
+                              match_tolerance=state["settings"].get("match_tolerance", 25)),
+             "diff": diff, "changes": []}
+    if fixed_teams:
+        match["fixed_teams"] = fixed_teams
     state["history"].append(match)
     touch(state)
     return match
@@ -364,6 +398,15 @@ def reset_roster(state):
     require_idle(state)
     state["roster"] = empty_roster()
     state["bulk_text"] = ""
+    state["team_fixing_enabled"] = False
+    touch(state)
+
+
+def reset_team_fixing(state):
+    require_idle(state)
+    state["team_fixing_enabled"] = False
+    for row in state["roster"]:
+        row.pop("fixed_team", None)
     touch(state)
 
 
@@ -418,10 +461,13 @@ def _update_roster_identity(state, old_name, new_name):
     active = any(state["roster"][i]["active"] for i in indexes)
     # Prefer the existing destination slot. Inactive named slots are never overwritten.
     keep = next((i for i in indexes if clean_name(state["roster"][i]["name"]) == new_name), indexes[0])
+    fixed_team = state["roster"][keep].get("fixed_team", "")
     for i in indexes:
         state["roster"][i] = empty_roster()[0]
     if new_name is not None:
         state["roster"][keep] = {"name": new_name, "rate": str(state["profiles"][new_name]["rate"]), "active": active}
+        if fixed_team:
+            state["roster"][keep]["fixed_team"] = fixed_team
 
 
 def _rename_private_member(state, old_name, new_name):
@@ -539,6 +585,7 @@ def _validate_settings(s):
     version = s.get("streak_version", 1)
     if type(version) is not int or version not in (1, 2):
         raise ValueError("連勝・連敗補正の保存形式が不正です。")
+    _integer(s.get("match_tolerance", 0), high=4 * MAX_RATE)
 
 
 def _validate_privates(state, legacy):
@@ -618,12 +665,18 @@ def import_state(raw):
             raise ValueError("保存データの形式が不正です。")
         _validate_settings(s["settings"])
         s["settings"].setdefault("new_player_multiplier", DEFAULT_SETTINGS["new_player_multiplier"])
+        s["settings"].setdefault("match_tolerance", DEFAULT_SETTINGS["match_tolerance"])
+        s.setdefault("team_fixing_enabled", False)
+        if type(s["team_fixing_enabled"]) is not bool:
+            raise ValueError("チーム固定のON/OFFの保存データが不正です。")
         if not isinstance(s["roster"], list) or len(s["roster"]) != 10:
             raise ValueError("プレイヤー枠の保存データが不正です。")
         for row in s["roster"]:
             if not isinstance(row["name"], str) or not isinstance(row["rate"], str) or type(row["active"]) is not bool:
                 raise ValueError("入力欄の保存データが不正です。")
             clean_name(row["name"])  # Draft rates may still be incomplete.
+            if row.get("fixed_team", "") not in ("", "A", "B"):
+                raise ValueError("チーム固定の保存データが不正です。")
         if not isinstance(s["profiles"], dict) or not isinstance(s["history"], list):
             raise ValueError("記録の保存データが不正です。")
         for name, p in s["profiles"].items():
@@ -665,6 +718,12 @@ def import_state(raw):
                 raise ValueError("参加者または休憩者が重複しています。")
             if m["diff"] != abs(sum(p["rate"] for p in a) - sum(p["rate"] for p in b)):
                 raise ValueError("チームのレート差が不正です。")
+            fixed = m.get("fixed_teams", {})
+            if not isinstance(fixed, dict) or not set(fixed) <= set(names):
+                raise ValueError("試合のチーム固定の保存データが不正です。")
+            for name, side in fixed.items():
+                if side not in ("A", "B") or name not in {p["name"] for p in m["team_a" if side == "A" else "team_b"]}:
+                    raise ValueError("試合のチーム固定と実際の編成が一致しません。")
             if m["status"] == "pending":
                 if pending or m["winner"] is not None or m["changes"]:
                     raise ValueError("未入力試合の保存データが不正です。")

@@ -54,6 +54,38 @@ def capture_roster():
     core.touch(st.session_state.model)
 
 
+def capture_name(slot):
+    model = st.session_state.model
+    if core.pending_match(model):
+        return
+    try:
+        old_name = core.clean_name(model["roster"][slot]["name"])
+        name = core.clean_name(st.session_state[f"name_{slot}"])
+    except ValueError:
+        capture_roster()
+        return
+    if name != old_name:
+        model["roster"][slot].pop("fixed_team", None)
+        st.session_state[f"fixed_{slot}"] = ""
+        if name in model["profiles"]:
+            st.session_state[f"rate_{slot}"] = str(model["profiles"][name]["rate"])
+    capture_roster()
+
+
+def capture_team_fixing():
+    model = st.session_state.model
+    if core.pending_match(model):
+        return
+    model["team_fixing_enabled"] = st.session_state.team_fixing_enabled
+    for i, row in enumerate(model["roster"]):
+        side = st.session_state.get(f"fixed_{i}", row.get("fixed_team", ""))
+        if side and row["name"].strip():
+            row["fixed_team"] = side
+        else:
+            row.pop("fixed_team", None)
+    core.touch(model)
+
+
 def capture_bulk():
     st.session_state.model["bulk_text"] = st.session_state.bulk_text
     core.touch(st.session_state.model)
@@ -74,6 +106,7 @@ def capture_settings():
         "percent": float(st.session_state.percent),
         "streak_bonus": st.session_state.streak_bonus,
         "new_player_multiplier": float(st.session_state.new_player_multiplier),
+        "match_tolerance": int(st.session_state.match_tolerance),
     }
     core.touch(st.session_state.model)
 
@@ -108,6 +141,8 @@ def sync_inputs():
     for i, row in enumerate(model["roster"]):
         for prefix, field in (("name", "name"), ("rate", "rate"), ("part", "active")):
             st.session_state[f"{prefix}_{i}"] = row[field]
+        st.session_state[f"fixed_{i}"] = row.get("fixed_team", "")
+    st.session_state.team_fixing_enabled = model.get("team_fixing_enabled", False)
     st.session_state.bulk_text = model["bulk_text"]
     for key, value in model["settings"].items():
         st.session_state[key] = value
@@ -147,9 +182,11 @@ if st.session_state.hydrated and "private_sessions" not in st.session_state.mode
     st.session_state.model = migrated
     st.session_state.sync_inputs = True
 
-if st.session_state.hydrated and "new_player_multiplier" not in st.session_state.model["settings"]:
-    st.session_state.model["settings"]["new_player_multiplier"] = core.DEFAULT_SETTINGS["new_player_multiplier"]
-    st.session_state.sync_inputs = True
+if st.session_state.hydrated:
+    for setting in ("new_player_multiplier", "match_tolerance"):
+        if setting not in st.session_state.model["settings"]:
+            st.session_state.model["settings"][setting] = core.DEFAULT_SETTINGS[setting]
+            st.session_state.sync_inputs = True
 
 payload = core.export_state(st.session_state.model) if st.session_state.hydrated else None
 obs_preferences = None
@@ -312,6 +349,8 @@ if match:
                              use_container_width=True, hide_index=True)
             st.write(f"合計レート：{sum(p['rate'] for p in match[field]):,}")
     st.caption(f"合計レート差：{match['diff']:,} · 休憩：" + ("、".join(match["resting"]) or "なし"))
+    if match.get("fixed_teams"):
+        st.caption("この試合の固定：" + " / ".join(f"{name} → {side}" for name, side in match["fixed_teams"].items()))
     if (len(match["team_a"]) + len(match["team_b"])) % 2:
         st.info("参加人数が奇数なので、チームの人数が異なります。人数差による有利・不利はレート差だけでは調整できません。")
     settings = match["settings"]
@@ -364,14 +403,14 @@ with participants_tab:
                       args=(core.load_profile, name, source == "初期レート"))
 
     st.subheader("1. 名前を入力")
-    st.caption("先に名前をまとめて入力できます。名前がある枠で参加OFFにすると、その試合は休憩として数えます。")
+    st.caption("登録済みの名前を入力すると最新レートを補完します。名前がある枠で参加OFFにすると、その試合は休憩として数えます。")
     for start in (0, 5):
         cols = st.columns(5)
         for offset, col in enumerate(cols):
             i = start + offset
             with col:
                 st.text_input(f"名前{i + 1}", key=f"name_{i}", max_chars=80,
-                              disabled=locked, on_change=capture_roster, placeholder=f"枠{i + 1}")
+                              disabled=locked, on_change=capture_name, args=(i,), placeholder=f"枠{i + 1}")
 
     st.subheader("2. レートと参加を選択")
     st.caption("レートも全角のまま入力できます（例：２６３０）。入力を確定すると自動保存されます。初期レートは「入力を登録」または初回チーム分け時の値です。")
@@ -387,6 +426,17 @@ with participants_tab:
                 st.checkbox(f"参加{i + 1}", key=f"part_{i}", disabled=locked, on_change=capture_roster)
     selected_count = sum(bool(r["name"].strip()) and r["active"] for r in model["roster"])
     st.write(f"参加 {selected_count}人 / 最大8人")
+    with st.expander("🔒 チーム固定"):
+        st.checkbox("チーム固定を使う", key="team_fixing_enabled", on_change=capture_team_fixing, disabled=locked)
+        st.caption("準備中は何度でもON/OFFや配置を変更できます。OFFでも選択は保持します。休憩者の固定はその試合では適用しません。")
+        choices = {"": "おまかせ", "A": "チームAに固定", "B": "チームBに固定"}
+        for i, row in enumerate(model["roster"]):
+            if row["name"].strip():
+                st.session_state.setdefault(f"fixed_{i}", row.get("fixed_team", ""))
+                st.selectbox(row["name"], list(choices), format_func=choices.get, key=f"fixed_{i}",
+                             on_change=capture_team_fixing,
+                             disabled=locked or not st.session_state.team_fixing_enabled)
+        st.button("固定をすべて解除", on_click=action, args=(core.reset_team_fixing,), disabled=locked)
     left, right = st.columns(2)
     left.button("入力を登録（初期・最新レートを保存）", on_click=action,
                 args=(core.commit_roster,), disabled=locked, use_container_width=True)
@@ -554,6 +604,10 @@ with backup_tab:
                 st.error(str(error))
 
 with settings_tab:
+    st.subheader("チーム分けの設定")
+    st.number_input("編成変更の許容差", min_value=0, max_value=4 * core.MAX_RATE, step=5,
+                    key="match_tolerance", on_change=capture_settings, disabled=locked)
+    st.caption("標準25。最小レート差にこの値を足した範囲で、直前の試合と同じ味方の組み合わせを減らします。0は最小差の候補だけを使います。チーム固定中は、固定を守れる編成の最小差を基準にします。")
     st.subheader("レート変動の設定")
     st.checkbox("負けたときにレートを減らす（標準ON）", key="decrease", on_change=capture_settings, disabled=locked)
     st.number_input("基本変動率（%）", min_value=0.0, max_value=20.0, step=0.5,
