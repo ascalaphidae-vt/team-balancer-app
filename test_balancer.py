@@ -139,6 +139,75 @@ class MatchTests(unittest.TestCase):
         self.assertIsNone(c.pending_match(restored)["selected_winner"])
         self.assertEqual(c.import_state(c.export_state(restored)), restored)
 
+    def test_new_player_first_four_results_with_streaks_and_rating_limits(self):
+        settings = dict(c.DEFAULT_SETTINGS)
+        self.assertEqual([c.calculate_change(2000, True, 1, settings, i) for i in range(6)],
+                         [120, 120, 120, 120, 60, 60])
+        self.assertEqual(c.calculate_change(2000, False, -3, settings, 0), -180)
+        self.assertEqual(c.calculate_change(2000, True, 3, settings, 0), 180)
+        self.assertEqual(c.calculate_change(20, False, -5, settings, 0), -2)
+        self.assertEqual(c.calculate_change(c.MAX_RATE, True, 5, settings, 0), 0)
+        settings["decrease"] = False
+        self.assertEqual(c.calculate_change(2000, False, -3, settings, 0), 0)
+        settings.update(percent=0.0, decrease=True)
+        self.assertEqual(c.calculate_change(2000, True, 5, settings, 0), 0)
+        settings.update(percent=3.0, new_player_multiplier=1.0)
+        self.assertEqual(c.calculate_change(2000, True, 1, settings, 0), 60)
+
+    def test_rejoining_keeps_career_counts_streak_and_new_player_eligibility(self):
+        s = c.new_state()
+        c.apply_bulk(s, "新しい人:2000,相手:2000,休憩:2000")
+        s["roster"][2]["active"] = False
+        for game in range(5):
+            if game == 2:
+                c.end_private(s)
+                s = c.import_state(c.export_state(s))
+                c.load_profile(s, "新しい人")
+                c.load_profile(s, "相手")
+            m = c.create_match(s)
+            winner = "A" if any(p["name"] == "新しい人" for p in m["team_a"]) else "B"
+            preview = c.preview_result(s, m, winner)
+            change = next(row for row in preview if row["name"] == "新しい人")
+            self.assertEqual(change["new_player_multiplier"], 2.0 if game < 4 else 1.0)
+            self.assertEqual(change["streak"], game + 1)
+            c.record_result(s, m["id"], winner)
+            if game == 3:
+                c.reopen_last_result(s)
+                self.assertEqual(c.preview_result(s, m, winner), preview)
+                c.record_result(s, m["id"], winner)
+        self.assertEqual(s["profiles"]["新しい人"]["matches"], 5)
+        self.assertEqual(s["profiles"]["新しい人"]["wins"], 5)
+        self.assertEqual(s["profiles"]["新しい人"]["streak"], 5)
+        self.assertEqual(c.current_private(s)["members"]["新しい人"]["matches"], 3)
+        first = s["private_sessions"][0]
+        self.assertEqual(c.private_streaks(s, first)["新しい人"], 2)
+        self.assertEqual(s["profiles"]["休憩"]["matches"], 0)
+        self.assertEqual(c.import_state(c.export_state(s)), s)
+
+    def test_old_results_and_pending_keep_their_original_rating_formula(self):
+        s = c.new_state()
+        s["settings"].pop("new_player_multiplier")
+        c.apply_bulk(s, "甲:2000,乙:2000")
+        first = c.create_match(s)
+        c.record_result(s, first["id"], "A")
+        old_changes = deepcopy(first["changes"])
+        pending = c.create_match(s)
+        old_preview = c.preview_result(s, pending, "B")
+        restored = c.import_state(c.export_state(s))
+        self.assertEqual(restored["history"][0]["changes"], old_changes)
+        self.assertEqual(c.preview_result(restored, c.pending_match(restored), "B"), old_preview)
+        self.assertEqual(restored["settings"]["new_player_multiplier"], 2.0)
+        c.record_result(restored, pending["id"], "B")
+        new_match = c.create_match(restored)
+        self.assertEqual(new_match["settings"]["new_player_multiplier"], 2.0)
+
+    def test_invalid_new_player_multipliers_are_rejected_in_backups(self):
+        for value in (0, 6, True, "2", float("nan")):
+            state = c.new_state()
+            state["settings"]["new_player_multiplier"] = value
+            with self.assertRaises(ValueError):
+                c.import_state(json.dumps(state))
+
     def test_corrupt_backup_does_not_load(self):
         s = populated()
         m = c.create_match(s)

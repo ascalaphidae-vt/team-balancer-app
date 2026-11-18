@@ -249,7 +249,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(at.selectbox(key="private_to_view").options), 1)
         current = next(df.value for df in at.dataframe if "状態" in df.value.columns)
         self.assertEqual(set(current["名前"]), {"新メンバー", "甲"})
-        self.assertIn("今回の連勝・連敗", current.columns)
+        self.assertIn("連勝・連敗（通算）", current.columns)
 
     def test_private_view_restores_closed_tables_and_can_select_past_private(self):
         s = c.new_state()
@@ -270,7 +270,7 @@ class AppTests(unittest.TestCase):
         current = next(df.value for df in at.dataframe if "状態" in df.value.columns)
         self.assertEqual(set(current["名前"]), {"甲", "新メンバー"})
 
-    def test_match_teams_show_current_private_streaks_and_resting_members(self):
+    def test_match_starts_on_team_assignment_and_stats_show_career_streaks(self):
         s = c.new_state()
         c.apply_bulk(s, "\n".join(f"選手{i}:2000" for i in range(8)) + "\n休憩さん:2000")
         s["roster"][8]["active"] = False
@@ -282,6 +282,10 @@ class AppTests(unittest.TestCase):
             c.record_result(s, m["id"], winner)
         m = c.create_match(s)
         at = self.start(c.import_state(c.export_state(s)))
+        self.assertEqual(at.radio(key=f"match_view_{m['id']}").value, "チーム分け")
+        self.assertFalse(any('class="team-members' in html.proto.body for html in at.get("html")))
+        at.radio(key=f"match_view_{m['id']}").set_value("メンバーの戦績").run()
+        self.assertFalse(at.exception)
         team_cards = [html.proto.body for html in at.get("html") if 'class="team-members' in html.proto.body]
         self.assertEqual(len(team_cards), 2)
         for cards, field in zip(team_cards, ("team_a", "team_b")):
@@ -290,13 +294,31 @@ class AppTests(unittest.TestCase):
                 self.assertIn(p["name"], cards)
             self.assertNotIn("休憩さん", cards)
         combined = "".join(team_cards)
-        self.assertIn("2連勝", combined)
-        self.assertIn("通算 6連勝", combined)
+        self.assertIn("6連勝", combined)
         self.assertIn("今回 2勝0敗", combined)
         current = next(df.value.set_index("名前") for df in at.dataframe if "状態" in df.value.columns)
-        self.assertEqual(current.loc["選手0", "今回の連勝・連敗"], "2連勝")
+        self.assertEqual(current.loc["選手0", "連勝・連敗（通算）"], "6連勝")
         self.assertEqual(current.loc["休憩さん", "状態"], "休憩")
         self.assertEqual(current.loc["休憩さん", "休憩"], 2)
+        at.radio(key=f"winner_{m['id']}").set_value("A").run()
+        self.button(at, "🏆 この結果を登録する").click().run()
+        self.button(at, "✅ チームを分ける").click().run()
+        new_match = c.pending_match(at.session_state.model)
+        self.assertEqual(at.radio(key=f"match_view_{new_match['id']}").value, "チーム分け")
+
+    def test_new_player_setting_saves_and_is_frozen_during_match(self):
+        at = self.start()
+        at.number_input(key="new_player_multiplier").set_value(3.0).run()
+        self.assertEqual(at.session_state.model["settings"]["new_player_multiplier"], 3.0)
+        at.text_area(key="bulk_text").set_value("甲:2000,乙:2000").run()
+        self.button(at, "一括入力を反映").click().run()
+        self.button(at, "✅ チームを分ける").click().run()
+        self.assertTrue(at.number_input(key="new_player_multiplier").disabled)
+        match = c.pending_match(at.session_state.model)
+        at.radio(key=f"winner_{match['id']}").set_value("A").run()
+        preview = next(df.value for df in at.dataframe if "新規補正" in df.value.columns)
+        self.assertEqual(set(preview["新規補正"]), {"×3"})
+        self.assertEqual(set(preview["変動"]), {"+180", "-180"})
 
 
 if __name__ == "__main__":

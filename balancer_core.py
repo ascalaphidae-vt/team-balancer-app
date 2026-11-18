@@ -12,7 +12,7 @@ import uuid
 VERSION = 2
 MAX_RATE = 999999
 MAX_BACKUP_BYTES = 4_000_000
-DEFAULT_SETTINGS = {"decrease": True, "percent": 3.0, "streak_bonus": True}
+DEFAULT_SETTINGS = {"decrease": True, "percent": 3.0, "streak_bonus": True, "new_player_multiplier": 2.0}
 
 
 def now():
@@ -68,6 +68,19 @@ def current_private(state):
     return next((p for p in reversed(state.get("private_sessions", [])) if p["ended_at"] is None), None)
 
 
+def private_streaks(state, private):
+    """Use career streaks, freezing them when the private is closed."""
+    values = {}
+    for match in state["history"]:
+        if match.get("private_id") == private["id"] and match["status"] == "recorded":
+            values.update({c["name"]: c["streak"] for c in match["changes"] if c["name"] in private["members"]})
+    if private["ended_at"] is None:
+        values.update({name: state["profiles"][name]["streak"] for name in private["members"] if name in state["profiles"]})
+    else:
+        values.update(private.get("ending_streaks", {}))
+    return values
+
+
 def _remember_members(state, rows):
     private = current_private(state)
     if private is None:
@@ -101,6 +114,7 @@ def end_private(state):
     for name, member in private["members"].items():
         if name in state["profiles"]:
             member["rate"] = state["profiles"][name]["rate"]
+    private["ending_streaks"] = private_streaks(state, private)
     private["ended_at"] = now()
     for p in state["profiles"].values():
         p["rests"] = 0
@@ -235,10 +249,12 @@ def next_streak(previous, won):
     return max(previous, 0) + 1 if won else min(previous, 0) - 1
 
 
-def calculate_change(rate, won, streak, settings):
+def calculate_change(rate, won, streak, settings, matches_before=None):
     factor = min(Decimal("2"), Decimal("1") + Decimal("0.25") * (abs(streak) - 1))
     if not settings["streak_bonus"]:
         factor = Decimal("1")
+    if matches_before is not None and matches_before < 4:
+        factor *= Decimal(str(settings.get("new_player_multiplier", 1.0)))
     amount = int((Decimal(rate) * Decimal(str(settings["percent"])) / 100 * factor)
                  .quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     if settings["percent"] > 0:
@@ -257,9 +273,14 @@ def preview_result(state, match, winner):
         name, rate = p["name"], p["rate"]
         won = name in winning
         streak = next_streak(state["profiles"][name]["streak"], won)
-        delta = calculate_change(rate, won, streak, match["settings"])
-        changes.append({"name": name, "before": rate, "after": rate + delta,
-                        "delta": delta, "won": won, "streak": streak})
+        matches_before = state["profiles"][name]["matches"]
+        delta = calculate_change(rate, won, streak, match["settings"], matches_before)
+        change = {"name": name, "before": rate, "after": rate + delta,
+                  "delta": delta, "won": won, "streak": streak}
+        # Keep old result snapshots byte-for-byte compatible with their settings.
+        if "new_player_multiplier" in match["settings"]:
+            change["new_player_multiplier"] = match["settings"]["new_player_multiplier"] if matches_before < 4 else 1.0
+        changes.append(change)
     return changes
 
 
@@ -506,6 +527,9 @@ def _validate_settings(s):
         raise ValueError("レート設定の保存データが不正です。")
     if type(s.get("percent")) not in (int, float) or not 0 <= s["percent"] <= 20:
         raise ValueError("レート変動率は0〜20%にしてください。")
+    multiplier = s.get("new_player_multiplier", 1.0)
+    if type(multiplier) not in (int, float) or not 1 <= multiplier <= 5:
+        raise ValueError("新規プレイヤーの補正倍率は1〜5倍にしてください。")
 
 
 def _validate_privates(state, legacy):
@@ -544,6 +568,11 @@ def _validate_privates(state, legacy):
             if not clean_name(name) or clean_name(name) != name:
                 raise ValueError("今回のメンバー名が不正です。")
             _validate_profile(member, name)
+        ending_streaks = private.get("ending_streaks", {})
+        if not isinstance(ending_streaks, dict) or not set(ending_streaks) <= set(members):
+            raise ValueError("終了時の連勝・連敗の保存データが不正です。")
+        for value in ending_streaks.values():
+            _integer(value, -1_000_000_000, 1_000_000_000)
         by_id[private["id"]] = private
     for match in state["history"]:
         private_id = match.get("private_id")
@@ -579,6 +608,7 @@ def import_state(raw):
         if not isinstance(s["updated_at"], str) or not isinstance(s["bulk_text"], str):
             raise ValueError("保存データの形式が不正です。")
         _validate_settings(s["settings"])
+        s["settings"].setdefault("new_player_multiplier", DEFAULT_SETTINGS["new_player_multiplier"])
         if not isinstance(s["roster"], list) or len(s["roster"]) != 10:
             raise ValueError("プレイヤー枠の保存データが不正です。")
         for row in s["roster"]:

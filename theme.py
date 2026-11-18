@@ -315,7 +315,6 @@ def apply_theme():
         .team-streak { color: var(--text-main); }
         .team-streak.winning { color: #ffe09a; }
         .team-streak.losing { color: #ff9dca; }
-        .team-lifetime { font-size: 0.8rem; }
     
         [data-testid="stNumberInput"] button {
             color: var(--neon-cyan);

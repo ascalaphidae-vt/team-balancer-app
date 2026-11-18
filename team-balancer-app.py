@@ -73,6 +73,7 @@ def capture_settings():
         "decrease": st.session_state.decrease,
         "percent": float(st.session_state.percent),
         "streak_bonus": st.session_state.streak_bonus,
+        "new_player_multiplier": float(st.session_state.new_player_multiplier),
     }
     core.touch(st.session_state.model)
 
@@ -144,6 +145,10 @@ if st.session_state.hydrated and "private_sessions" not in st.session_state.mode
                            "team-balancer-before-migration.json", "application/json")
         st.stop()
     st.session_state.model = migrated
+    st.session_state.sync_inputs = True
+
+if st.session_state.hydrated and "new_player_multiplier" not in st.session_state.model["settings"]:
+    st.session_state.model["settings"]["new_player_multiplier"] = core.DEFAULT_SETTINGS["new_player_multiplier"]
     st.session_state.sync_inputs = True
 
 payload = core.export_state(st.session_state.model) if st.session_state.hydrated else None
@@ -223,6 +228,7 @@ def changes_table(changes):
         "名前": c["name"], "結果": "勝ち" if c["won"] else "負け",
         "試合前": c["before"], "変動": f"{c['delta']:+d}", "試合後": c["after"],
         "連勝・連敗": f"{abs(c['streak'])}連{'勝' if c['streak'] > 0 else '敗'}",
+        "新規補正": f"×{c.get('new_player_multiplier', 1):g}",
     } for c in changes])
 
 
@@ -235,26 +241,24 @@ def show_team_members(players, team):
     for player in players:
         name = player["name"]
         member = private["members"][name]
-        streak = member["streak"]
+        streak = model["profiles"][name]["streak"]
         streak_class = "winning" if streak > 0 else "losing" if streak < 0 else ""
-        label = streak_text(streak) if member["matches"] else "今回の初戦"
+        label = streak_text(streak)
         delta = player["rate"] - member["initial_rate"]
-        lifetime = model["profiles"][name]["streak"]
-        continuation = (f'<span class="team-lifetime">通算 {streak_text(lifetime)}</span>'
-                        if lifetime != streak else "")
         cards.append(
             f'<div class="team-player">'
             f'<div class="team-player-heading"><span class="team-player-name">{escape(name)}</span>'
             f'<span class="team-player-rate">{player["rate"]:,}<small> 今回 {delta:+,}</small></span></div>'
             f'<div class="team-player-stats"><span>今回 {member["wins"]}勝{member["losses"]}敗</span>'
             f'<strong class="team-streak {streak_class}">{label}</strong>'
-            f'<span>休憩 {member["rests"]}回</span>{continuation}</div></div>'
+            f'<span>休憩 {member["rests"]}回</span></div></div>'
         )
     st.html(f'<div class="team-members team-{team}">{"".join(cards)}</div>')
 
 
 def show_private_table(selected, table_key):
     finished = selected["ended_at"] is not None
+    streaks = core.private_streaks(model, selected)
     positions = {}
     if not finished:
         if match:
@@ -272,7 +276,7 @@ def show_private_table(selected, table_key):
         row.update({"終了時レート" if finished else "現在レート": p["rate"],
                     "今回の増減": p["rate"] - p["initial_rate"],
                     "勝ち": p["wins"], "負け": p["losses"],
-                    "今回の連勝・連敗": streak_text(p["streak"]), "休憩": p["rests"],
+                    "連勝・連敗（通算）": streak_text(streaks.get(p["name"], 0)), "休憩": p["rests"],
                     "試合": p["matches"],
                     "勝率": f"{100 * p['wins'] / p['matches']:.1f}%" if p["matches"] else "—",
                     "開始時レート": p["initial_rate"]})
@@ -293,18 +297,26 @@ def show_private_table(selected, table_key):
 
 if match:
     st.warning(f"第{match['number']}試合は結果未入力です。結果を登録すると次のチーム分けに進めます。")
-    st.caption("今回のプラベの戦績・連勝／連敗をチームごとに表示しています。レートはこの試合の開始時点です。")
+    match_view = st.radio("チームの表示", ["チーム分け", "メンバーの戦績"], horizontal=True,
+                          key=f"match_view_{match['id']}")
+    if match_view == "メンバーの戦績":
+        st.caption("勝敗・休憩は今回分、連勝・連敗は前回のプラベから続く通算値です。")
     columns = st.columns(2)
     for col, label, field in zip(columns, ("🟩 チームA", "🟥 チームB"), ("team_a", "team_b")):
         with col:
             st.subheader(label)
-            show_team_members(match[field], field[-1])
+            if match_view == "メンバーの戦績":
+                show_team_members(match[field], field[-1])
+            else:
+                st.dataframe(pd.DataFrame([{"名前": p["name"], "レート": p["rate"]} for p in match[field]]),
+                             use_container_width=True, hide_index=True)
             st.write(f"合計レート：{sum(p['rate'] for p in match[field]):,}")
     st.caption(f"合計レート差：{match['diff']:,} · 休憩：" + ("、".join(match["resting"]) or "なし"))
     if (len(match["team_a"]) + len(match["team_b"])) % 2:
         st.info("参加人数が奇数なので、チームの人数が異なります。人数差による有利・不利はレート差だけでは調整できません。")
     settings = match["settings"]
     st.caption(f"この試合の設定：変動率 {settings['percent']:g}% / 敗北時の減少 {'ON' if settings['decrease'] else 'OFF'} / 連勝・連敗補正 {'ON' if settings['streak_bonus'] else 'OFF'}")
+    st.caption(f"新規プレイヤーの通算1〜4試合目：変動量 ×{settings.get('new_player_multiplier', 1):g}")
     winner = st.radio("勝利チームを選んでください", ["A", "B"], index=None,
                       key=f"winner_{match['id']}", horizontal=True,
                       on_change=capture_winner, args=(match["id"],))
@@ -390,7 +402,7 @@ with private_tab:
     st.subheader("今回の参加者一覧")
     if private:
         st.write(f"第{private['number']}回プラベ · 進行中")
-        st.caption("連勝・連敗は今回のプラベ内で数えます。途中で入力枠から外れたメンバーは「現在の枠外」と表示します。")
+        st.caption("連勝・連敗は前回のプラベから続く通算値です。途中で入力枠から外れたメンバーは「現在の枠外」と表示します。")
         show_private_table(private, "current_private_members_table")
     else:
         st.info("現在、進行中のプラベはありません。今回の参加者を入力して、最初のチーム分けをすると一覧ができます。")
@@ -549,6 +561,9 @@ with settings_tab:
     st.checkbox("連勝・連敗で変動を大きくする", key="streak_bonus", on_change=capture_settings, disabled=locked)
     st.markdown("連勝・連敗の **1回目は1倍、2回目は1.25倍、3回目は1.5倍、4回目は1.75倍、5回目以降は2倍**。勝敗が変わると1回目から数え直します。休憩は連勝・連敗を中断しません。")
     st.caption("例：レート2000・変動率3%なら、初回は±60、2連続なら±75。実際の計算は各試合直前のレートが基準です。小数は四捨五入、最低変動1（変動率0%は0）、レート範囲0〜999999。減少OFFでは負けてもレートは変わりません。")
+    st.number_input("新規プレイヤーの補正倍率（通算1〜4試合目）", min_value=1.0, max_value=5.0, step=0.5,
+                    key="new_player_multiplier", on_change=capture_settings, disabled=locked)
+    st.caption("標準2倍。1倍で補正OFF。勝ち・負けの両方に適用し、連勝・連敗の倍率と掛け合わせます。通算5試合目から通常の変動量に戻ります。再参加でも通算試合数で判定します。")
     if locked:
         st.info("結果未入力の試合があります。設定は結果登録後に変更できます。")
 
